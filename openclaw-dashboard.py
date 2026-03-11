@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OpenClaw 诊断面板 v1.0
+OpenClaw 诊断面板 v1.1
 单文件 Python Web 服务，内嵌前端 HTML/CSS/JS
 用于可视化 OpenClaw 的性能诊断数据
 
@@ -21,11 +21,13 @@ if sys.version_info < (3, 6):
 import argparse
 import glob
 import json
+import math
 import os
 import platform
 import re
 import signal
 import socket
+import subprocess
 import threading
 import traceback
 from collections import OrderedDict
@@ -36,8 +38,21 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
+
+# 模型定价表 (input_per_1m, output_per_1m, cache_read_per_1m, cache_write_per_1m) USD
+MODEL_PRICING = {
+    "claude-opus-4": (15.0, 75.0, 1.5, 18.75),
+    "claude-opus-4.5": (15.0, 75.0, 1.5, 18.75),
+    "claude-sonnet-4": (3.0, 15.0, 0.3, 3.75),
+    "claude-sonnet-3.5": (3.0, 15.0, 0.3, 3.75),
+    "claude-haiku": (0.25, 1.25, 0.025, 0.3),
+    "gpt-4o": (2.5, 10.0, 1.25, 1.25),
+    "gpt-4o-mini": (0.15, 0.6, 0.075, 0.075),
+    "gemini-3-flash": (0.1, 0.4, 0.025, 0.05),
+    "kimi-k2": (0.6, 2.0, 0.3, 0.3),
+}
 
 # ============================================================
 # 路径自动检测
@@ -103,7 +118,7 @@ def detect_sessions_dirs(cli_arg):
 
 def check_openclaw_config():
     """检测 OpenClaw 配置是否开启了诊断和 debug 日志级别
-    返回: (config_ok, warnings_list)
+    返回: (config_ok, warnings_list, config_path, config_data)
     """
     warnings = []
     config_ok = False
@@ -130,7 +145,7 @@ def check_openclaw_config():
     if not config_path:
         warnings.append("[警告] 未找到 OpenClaw 配置文件, 无法校验诊断是否开启")
         warnings.append("       搜索路径: %s" % ", ".join(config_paths))
-        return False, warnings
+        return False, warnings, None, None
 
     # 读取并解析配置
     try:
@@ -138,7 +153,7 @@ def check_openclaw_config():
             config_data = json.load(f)
     except (IOError, OSError, ValueError) as e:
         warnings.append("[警告] 配置文件读取失败 (%s): %s" % (config_path, e))
-        return False, warnings
+        return False, warnings, config_path, None
 
     # 检查 diagnostics.enabled
     diag = config_data.get("diagnostics", {})
@@ -176,7 +191,7 @@ def check_openclaw_config():
     else:
         config_ok = True
 
-    return config_ok, warnings
+    return config_ok, warnings, config_path, config_data
 
 
 def safe_read_lines(filepath, max_lines=MAX_LOG_LINES):
@@ -393,7 +408,6 @@ def parse_session_files(sessions_dirs):
                 tc_name = item.get("name", "")
                 tc_args_raw = item.get("arguments", "{}")
                 if isinstance(tc_args_raw, dict):
-                    # arguments 已经是 dict，无需二次解析
                     pass
                 elif not isinstance(tc_args_raw, str):
                     tc_args_raw = str(tc_args_raw)
@@ -412,54 +426,128 @@ def parse_session_files(sessions_dirs):
 
 
 def summarize_tool_args(tool_name, args_raw):
-    """提取工具参数的可读摘要"""
+    """提取工具参数的可读摘要（详细版）"""
     if isinstance(args_raw, dict):
         args = args_raw
     elif isinstance(args_raw, str):
         try:
             args = json.loads(args_raw)
         except (json.JSONDecodeError, ValueError):
-            return args_raw[:80] if args_raw else ""
+            return args_raw[:200] if args_raw else ""
     else:
-        return str(args_raw)[:80] if args_raw else ""
+        return str(args_raw)[:200] if args_raw else ""
     if not isinstance(args, dict):
-        return str(args)[:80]
+        return str(args)[:200]
     if tool_name == "exec":
         cmd = args.get("command", "")
-        first_line = cmd.split("\n")[0][:90]
+        cmd_preview = cmd[:200]
         wd = args.get("workdir", "")
+        parts = [cmd_preview]
         if wd:
-            return "%s  [cwd: %s]" % (first_line, wd)
-        return first_line
+            parts.append("[cwd: %s]" % wd)
+        bg = args.get("background")
+        if bg:
+            parts.append("[background]")
+        timeout = args.get("timeout")
+        if timeout:
+            parts.append("[timeout: %s]" % timeout)
+        return "\n".join(parts)
     elif tool_name in ("read", "write"):
         p = args.get("path", "") or args.get("file_path", "")
-        return p
+        parts = [p]
+        offset = args.get("offset")
+        limit = args.get("limit")
+        if offset:
+            parts.append("offset=%s" % offset)
+        if limit:
+            parts.append("limit=%s" % limit)
+        if tool_name == "write":
+            content = args.get("content", "")
+            if content:
+                parts.append("(%d chars)" % len(content))
+        return "  ".join(parts)
     elif tool_name == "edit":
         p = args.get("path", "") or args.get("file_path", "")
         old = args.get("old_string", "") or args.get("oldText", "")
-        preview = old[:60].replace("\n", "\\n") if old else ""
-        return "%s  old: %s" % (p, preview)
+        new = args.get("new_string", "") or args.get("newText", "")
+        old_preview = old[:100] if old else ""
+        new_preview = new[:100] if new else ""
+        lines = [p]
+        if old_preview:
+            lines.append("old: %s" % old_preview)
+        if new_preview:
+            lines.append("new: %s" % new_preview)
+        return "\n".join(lines)
     elif tool_name == "web_search":
-        return args.get("query", "")
+        q = args.get("query", "")
+        count = args.get("count", "")
+        parts = [q]
+        if count:
+            parts.append("count=%s" % count)
+        return "  ".join(parts)
     elif tool_name == "web_fetch":
-        return args.get("url", "")[:90]
+        url = args.get("url", "")
+        mode = args.get("extractMode", "")
+        parts = [url]
+        if mode:
+            parts.append("mode=%s" % mode)
+        return "  ".join(parts)
     elif tool_name == "sessions_spawn":
         agent = args.get("agentId", "")
-        task = args.get("task", "")[:60]
-        return "agent=%s task=%s" % (agent, task)
+        task = args.get("task", "")[:100]
+        label = args.get("label", "")
+        model = args.get("model", "")
+        parts = ["agent=%s" % agent]
+        if label:
+            parts.append("label=%s" % label)
+        if model:
+            parts.append("model=%s" % model)
+        if task:
+            parts.append("\ntask: %s" % task)
+        return "  ".join(parts)
     elif tool_name == "message":
         action = args.get("action", "")
         target = args.get("target", "")
-        return "action=%s target=%s" % (action, target)
+        msg = args.get("message", "")[:100]
+        parts = ["action=%s" % action]
+        if target:
+            parts.append("target=%s" % target)
+        if msg:
+            parts.append("\n%s" % msg)
+        return "  ".join(parts)
     elif tool_name == "browser":
         action = args.get("action", "")
         url = args.get("url", "")
-        return "action=%s url=%s" % (action, url[:60])
+        ref = args.get("ref", "")
+        kind = args.get("kind", "")
+        text = args.get("text", "")
+        parts = ["action=%s" % action]
+        if url:
+            parts.append("url=%s" % url[:120])
+        if ref:
+            parts.append("ref=%s" % ref)
+        if kind:
+            parts.append("kind=%s" % kind)
+        if text:
+            parts.append("text=%s" % text[:80])
+        return "  ".join(parts)
+    elif tool_name == "memory_search":
+        return args.get("query", "")
+    elif tool_name == "memory_get":
+        p = args.get("path", "")
+        frm = args.get("from", "")
+        ln = args.get("lines", "")
+        parts = [p]
+        if frm:
+            parts.append("from=%s" % frm)
+        if ln:
+            parts.append("lines=%s" % ln)
+        return "  ".join(parts)
     else:
         # 通用: 前几个 key=value
         parts = []
-        for k, v in list(args.items())[:3]:
-            vs = str(v)[:50]
+        for k, v in list(args.items())[:5]:
+            vs = str(v)[:80]
             parts.append("%s=%s" % (k, vs))
         return "  ".join(parts)
 
@@ -479,7 +567,6 @@ def compute_infer_segments(run):
     # 按 start 时间排序工具
     sorted_tools = sorted([t for t in tools if t.get("start")], key=lambda t: t["start"])
     if not sorted_tools:
-        # 无工具调用
         end = agent_end or run.get("end") or agent_start
         segments.append({
             "label": "推理 #1 (生成回复)",
@@ -488,7 +575,6 @@ def compute_infer_segments(run):
             "duration_ms": ms_between(agent_start, end),
         })
         return segments
-    # 推理 #1: agent_start -> 第一个 tool_start
     first_tool = sorted_tools[0]
     seg_end = first_tool["start"]
     segments.append({
@@ -497,7 +583,6 @@ def compute_infer_segments(run):
         "end": seg_end,
         "duration_ms": ms_between(agent_start, seg_end),
     })
-    # 推理 #2..N-1: tool_end[i] -> tool_start[i+1]
     for i in range(len(sorted_tools) - 1):
         t_end = sorted_tools[i].get("end")
         t_next_start = sorted_tools[i + 1].get("start")
@@ -508,7 +593,6 @@ def compute_infer_segments(run):
                 "end": t_next_start,
                 "duration_ms": ms_between(t_end, t_next_start),
             })
-    # 推理 #N: 最后一个 tool_end -> agent_end
     last_tool = sorted_tools[-1]
     last_end = last_tool.get("end")
     final_end = agent_end or run.get("end")
@@ -520,6 +604,150 @@ def compute_infer_segments(run):
             "duration_ms": ms_between(last_end, final_end),
         })
     return segments
+
+
+# ============================================================
+# 模型定价匹配
+# ============================================================
+
+def match_model_pricing(model_name):
+    """根据模型名匹配定价，返回 (input, output, cache_read, cache_write) per 1M tokens 或 None"""
+    if not model_name:
+        return None
+    lower = model_name.lower()
+    for keyword, pricing in MODEL_PRICING.items():
+        if keyword in lower:
+            return pricing
+    return None
+
+
+def estimate_cost(inp, out, cache_read, cache_write, pricing):
+    """根据 token 数和定价计算费用"""
+    if not pricing:
+        return None
+    return {
+        "input_cost": round(inp / 1_000_000 * pricing[0], 4),
+        "output_cost": round(out / 1_000_000 * pricing[1], 4),
+        "cache_read_cost": round(cache_read / 1_000_000 * pricing[2], 4),
+        "cache_write_cost": round(cache_write / 1_000_000 * pricing[3], 4),
+        "total_cost": round(
+            inp / 1_000_000 * pricing[0] +
+            out / 1_000_000 * pricing[1] +
+            cache_read / 1_000_000 * pricing[2] +
+            cache_write / 1_000_000 * pricing[3], 4),
+        "currency": "USD",
+    }
+
+
+# ============================================================
+# 系统信息
+# ============================================================
+
+def get_system_info(data_store, config_path, config_data):
+    """收集系统信息"""
+    info = {}
+
+    # OpenClaw version
+    oc_version = ""
+    try:
+        result = subprocess.run(
+            ["openclaw", "--version"],
+            capture_output=True, text=True, timeout=5,
+            stderr=subprocess.DEVNULL
+        )
+        if result.returncode == 0:
+            oc_version = result.stdout.strip()
+    except Exception:
+        pass
+    if not oc_version:
+        # try package.json
+        for pj_path in [
+            "/usr/lib/node_modules/openclaw/package.json",
+            os.path.expanduser("~/.npm-global/lib/node_modules/openclaw/package.json"),
+        ]:
+            if os.path.isfile(pj_path):
+                try:
+                    with open(pj_path, "r") as f:
+                        pj = json.load(f)
+                    oc_version = pj.get("version", "")
+                    break
+                except Exception:
+                    pass
+    info["openclaw_version"] = oc_version
+    info["openclaw_config_path"] = config_path or ""
+
+    # Config info
+    diag_enabled = False
+    log_level = "info"
+    default_model = ""
+    agents_list = []
+    channels_list = []
+    if config_data and isinstance(config_data, dict):
+        diag = config_data.get("diagnostics", {})
+        if isinstance(diag, dict):
+            diag_enabled = diag.get("enabled", False)
+        logging_cfg = config_data.get("logging", {})
+        if isinstance(logging_cfg, dict):
+            log_level = logging_cfg.get("level", "info")
+        default_model = config_data.get("defaultModel", "")
+        agents_cfg = config_data.get("agents", {})
+        if isinstance(agents_cfg, dict):
+            al = agents_cfg.get("list", [])
+            if isinstance(al, list):
+                for a in al:
+                    if isinstance(a, dict):
+                        agents_list.append(a.get("id", a.get("name", "")))
+                    elif isinstance(a, str):
+                        agents_list.append(a)
+        channels_cfg = config_data.get("channels", {})
+        if isinstance(channels_cfg, dict):
+            for key in channels_cfg:
+                channels_list.append(key)
+        elif isinstance(channels_cfg, list):
+            channels_list = channels_cfg
+
+    info["diagnostics_enabled"] = diag_enabled
+    info["logging_level"] = log_level
+    info["default_model"] = default_model
+    info["agents"] = agents_list
+    info["channels"] = channels_list
+
+    # System info
+    info["python_version"] = platform.python_version()
+    info["platform"] = platform.platform()
+    info["hostname"] = socket.gethostname()
+    info["cpu_count"] = os.cpu_count() or 0
+
+    # Memory
+    mem_total = 0
+    mem_used = 0
+    try:
+        with open("/proc/meminfo", "r") as f:
+            meminfo = f.read()
+        m_total = re.search(r"MemTotal:\s+(\d+)\s+kB", meminfo)
+        m_avail = re.search(r"MemAvailable:\s+(\d+)\s+kB", meminfo)
+        if m_total:
+            mem_total = int(m_total.group(1)) // 1024
+        if m_total and m_avail:
+            mem_used = mem_total - int(m_avail.group(1)) // 1024
+    except Exception:
+        pass
+    info["memory_total_mb"] = mem_total
+    info["memory_used_mb"] = mem_used
+
+    # Log/session stats
+    info["log_dir"] = data_store.log_dir
+    log_files = glob.glob(os.path.join(data_store.log_dir, "openclaw-*.log"))
+    info["log_file_count"] = len(log_files)
+
+    sessions_dir_count = len(data_store.sessions_dirs)
+    session_file_count = 0
+    for d in data_store.sessions_dirs:
+        session_file_count += len(glob.glob(os.path.join(d, "*.jsonl")))
+    info["sessions_dir_count"] = sessions_dir_count
+    info["session_file_count"] = session_file_count
+
+    return info
 
 
 # ============================================================
@@ -547,18 +775,15 @@ class DataStore(object):
         return self._tool_data or {}
 
     def _get_text_reply_usage(self):
-        """获取纯文本回复的 usage 列表"""
-        self._get_tool_data()  # 确保已加载
+        self._get_tool_data()
         return self._text_reply_usage or []
 
     def get_dates(self):
-        """返回可用的日期列表（降序）"""
         pattern = os.path.join(self.log_dir, "openclaw-*.log")
         files = glob.glob(pattern)
         dates = []
         for f in files:
             basename = os.path.basename(f)
-            # openclaw-YYYY-MM-DD.log
             m = re.match(r"openclaw-(\d{4}-\d{2}-\d{2})\.log", basename)
             if m:
                 dates.append(m.group(1))
@@ -566,7 +791,6 @@ class DataStore(object):
         return dates
 
     def _load_runs(self, date):
-        """加载某天的 run 数据（带缓存）"""
         filepath = os.path.join(self.log_dir, "openclaw-%s.log" % date)
         if not os.path.isfile(filepath):
             return OrderedDict()
@@ -583,7 +807,6 @@ class DataStore(object):
         return runs
 
     def get_summary(self, date):
-        """返回某天的摘要数据"""
         runs = self._load_runs(date)
         if not runs:
             return {
@@ -616,15 +839,12 @@ class DataStore(object):
                 models.add(run["model"])
             if run.get("channel"):
                 channels.add(run["channel"])
-            # 推理时间
             segs = compute_infer_segments(run)
             for s in segs:
                 total_infer += s["duration_ms"]
-            # 工具时间
             for t in run.get("tools", []):
                 if t.get("start") and t.get("end"):
                     total_tool += ms_between(t["start"], t["end"])
-                # token
                 tc_id = t.get("toolCallId", "")
                 td = tool_data.get(tc_id, {})
                 usage = td.get("usage", {})
@@ -645,18 +865,17 @@ class DataStore(object):
             "channels": sorted(channels),
         }
 
-    def get_runs_list(self, date):
-        """返回某天的 run 列表"""
+    def get_runs_list(self, date, page=1, per_page=20):
+        """返回某天的 run 列表（分页）"""
         runs = self._load_runs(date)
         tool_data = self._get_tool_data()
-        result = []
+        all_results = []
         for run in runs.values():
             infer_segs = compute_infer_segments(run)
             infer_ms = sum(s["duration_ms"] for s in infer_segs)
             tool_ms = 0
             tool_count = len(run.get("tools", []))
             token_output = 0
-            # 收集已关联的 usage id，避免重复计
             seen_usage_ids = set()
             for t in run.get("tools", []):
                 if t.get("start") and t.get("end"):
@@ -678,9 +897,13 @@ class DataStore(object):
             start_str = ""
             if run.get("start"):
                 start_str = run["start"].strftime("%H:%M:%S")
-            result.append({
+            end_str = ""
+            if run.get("end"):
+                end_str = run["end"].strftime("%H:%M:%S")
+            all_results.append({
                 "run_id": run["run_id"],
                 "start": start_str,
+                "end": end_str,
                 "model": run.get("model", ""),
                 "channel": run.get("channel", ""),
                 "duration_ms": run.get("duration_ms", 0),
@@ -690,10 +913,20 @@ class DataStore(object):
                 "token_output": token_output,
                 "status": status,
             })
-        return result
+        total = len(all_results)
+        total_pages = max(1, math.ceil(total / per_page)) if per_page > 0 else 1
+        page = max(1, min(page, total_pages))
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        return {
+            "runs": all_results[start_idx:end_idx],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+        }
 
     def get_run_detail(self, date, run_id):
-        """返回单个 run 的完整详情"""
         runs = self._load_runs(date)
         run = runs.get(run_id)
         if not run:
@@ -701,14 +934,10 @@ class DataStore(object):
         tool_data = self._get_tool_data()
         text_reply_usage = self._get_text_reply_usage()
 
-        # 推理分段
         infer_segs = compute_infer_segments(run)
-
-        # Run 的时间范围（用于匹配纯文本回复 usage）
         run_start_str = run["start"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("start") else ""
         run_end_str = run["end"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("end") else ""
 
-        # token 汇总
         total_input = 0
         total_output = 0
         total_cache_read = 0
@@ -721,13 +950,11 @@ class DataStore(object):
             usage_rec = {}
 
             if i < len(run.get("tools", [])):
-                # 这段推理对应的工具调用
                 tc_id = run["tools"][i].get("toolCallId", "")
                 td = tool_data.get(tc_id, {})
                 usage_rec = td.get("usage", {})
                 output_tokens = usage_rec.get("output", 0)
             elif run.get("end"):
-                # 最后一段推理（生成回复），在纯文本回复 usage 中查找
                 for ts_str, u in text_reply_usage:
                     if run_start_str and run_end_str:
                         if ts_str[:19] >= run_start_str and ts_str[:19] <= run_end_str:
@@ -736,7 +963,6 @@ class DataStore(object):
                                 output_tokens = u.get("output", 0)
                                 break
             elif not run.get("tools") and run.get("end"):
-                # 没有工具的 run，整段都是推理
                 for ts_str, u in text_reply_usage:
                     if run_start_str and run_end_str:
                         if ts_str[:19] >= run_start_str and ts_str[:19] <= run_end_str:
@@ -745,7 +971,6 @@ class DataStore(object):
                                 output_tokens = u.get("output", 0)
                                 break
 
-            # 累加到 token 汇总（避免重复计算）
             if usage_rec and id(usage_rec) not in seen_usage_ids:
                 seen_usage_ids.add(id(usage_rec))
                 total_input += usage_rec.get("input", 0)
@@ -761,7 +986,7 @@ class DataStore(object):
                 "output_tokens": output_tokens,
                 "tok_per_s": tok_per_s,
             })
-        # 工具列表
+
         tools_list = []
         total_tool_ms = 0
         for t in run.get("tools", []):
@@ -789,7 +1014,7 @@ class DataStore(object):
                     "totalTokens": usage.get("totalTokens", 0),
                 },
             })
-        # 甘特图数据
+
         total_infer_ms = sum(s["duration_ms"] for s in infer_segs)
         run_start = run.get("start")
         run_end = run.get("end") or run.get("agent_end")
@@ -819,7 +1044,7 @@ class DataStore(object):
                     "width_pct": round(dur / total_dur * 100, 2),
                     "duration_ms": dur,
                 })
-        # 速率
+
         dur_s = total_dur / 1000.0 if total_dur > 0 else 1
         overall_tok_s = round(total_output / dur_s, 1) if total_output > 0 else 0
         return {
@@ -849,6 +1074,190 @@ class DataStore(object):
             "gantt": gantt,
         }
 
+    def get_token_analysis(self, date):
+        """返回 Token 消耗分析数据"""
+        runs = self._load_runs(date)
+        tool_data = self._get_tool_data()
+        text_reply_usage = self._get_text_reply_usage()
+
+        if not runs:
+            return {
+                "date": date, "total_runs": 0,
+                "token_totals": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+                "cost_estimate": None, "by_model": [], "by_hour": [],
+                "top_expensive_runs": [], "efficiency": {},
+            }
+
+        total_input = 0
+        total_output = 0
+        total_cache_read = 0
+        total_cache_write = 0
+        total_infer_ms = 0
+        total_tool_ms = 0
+        total_dur_ms = 0
+
+        by_model = {}  # model -> {runs, input, output, cache_read, cache_write, infer_ms}
+        by_hour = {}   # "HH:00" -> {runs, output}
+        run_costs = []  # for top expensive
+
+        for run in runs.values():
+            model = run.get("model", "unknown")
+            run_start = run.get("start")
+            run_end = run.get("end")
+            run_start_str = run_start.strftime("%Y-%m-%dT%H:%M:%S") if run_start else ""
+            run_end_str = run_end.strftime("%Y-%m-%dT%H:%M:%S") if run_end else ""
+
+            # Collect token usage for this run
+            r_input = 0
+            r_output = 0
+            r_cache_read = 0
+            r_cache_write = 0
+            seen_ids = set()
+            infer_segs = compute_infer_segments(run)
+            r_infer_ms = sum(s["duration_ms"] for s in infer_segs)
+            r_tool_ms = 0
+
+            for i, s in enumerate(infer_segs):
+                usage_rec = {}
+                if i < len(run.get("tools", [])):
+                    tc_id = run["tools"][i].get("toolCallId", "")
+                    td = tool_data.get(tc_id, {})
+                    usage_rec = td.get("usage", {})
+                elif run_end:
+                    for ts_str, u in text_reply_usage:
+                        if run_start_str and run_end_str:
+                            if ts_str[:19] >= run_start_str and ts_str[:19] <= run_end_str:
+                                if id(u) not in seen_ids:
+                                    usage_rec = u
+                                    break
+                if usage_rec and id(usage_rec) not in seen_ids:
+                    seen_ids.add(id(usage_rec))
+                    r_input += usage_rec.get("input", 0)
+                    r_output += usage_rec.get("output", 0)
+                    r_cache_read += usage_rec.get("cacheRead", 0)
+                    r_cache_write += usage_rec.get("cacheWrite", 0)
+
+            for t in run.get("tools", []):
+                if t.get("start") and t.get("end"):
+                    r_tool_ms += ms_between(t["start"], t["end"])
+
+            total_input += r_input
+            total_output += r_output
+            total_cache_read += r_cache_read
+            total_cache_write += r_cache_write
+            total_infer_ms += r_infer_ms
+            total_tool_ms += r_tool_ms
+            dur = run.get("duration_ms", 0)
+            total_dur_ms += dur
+
+            # by_model
+            if model not in by_model:
+                by_model[model] = {"runs": 0, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "infer_ms": 0}
+            bm = by_model[model]
+            bm["runs"] += 1
+            bm["input"] += r_input
+            bm["output"] += r_output
+            bm["cache_read"] += r_cache_read
+            bm["cache_write"] += r_cache_write
+            bm["infer_ms"] += r_infer_ms
+
+            # by_hour
+            if run_start:
+                hour_key = run_start.strftime("%H:00")
+                if hour_key not in by_hour:
+                    by_hour[hour_key] = {"runs": 0, "output": 0}
+                by_hour[hour_key]["runs"] += 1
+                by_hour[hour_key]["output"] += r_output
+
+            # Estimate cost per run
+            pricing = match_model_pricing(model)
+            r_cost = estimate_cost(r_input, r_output, r_cache_read, r_cache_write, pricing)
+            start_str = run_start.strftime("%H:%M:%S") if run_start else ""
+            run_costs.append({
+                "run_id": run["run_id"],
+                "start": start_str,
+                "output": r_output,
+                "duration_ms": dur,
+                "tool_count": len(run.get("tools", [])),
+                "estimated_cost": r_cost["total_cost"] if r_cost else 0,
+            })
+
+        # Overall cost estimate (use first model's pricing or best guess)
+        primary_model = ""
+        if by_model:
+            primary_model = max(by_model.keys(), key=lambda m: by_model[m]["runs"])
+        pricing = match_model_pricing(primary_model)
+        cost_est = estimate_cost(total_input, total_output, total_cache_read, total_cache_write, pricing)
+        if cost_est:
+            cost_est["note"] = "基于 %s 定价估算, 实际费用以账单为准" % primary_model
+        else:
+            cost_est = {
+                "input_cost": 0, "output_cost": 0, "cache_read_cost": 0, "cache_write_cost": 0,
+                "total_cost": 0, "currency": "USD", "note": "未知模型定价",
+            }
+
+        # by_model list
+        by_model_list = []
+        for m, bm in by_model.items():
+            infer_s = bm["infer_ms"] / 1000.0 if bm["infer_ms"] > 0 else 1
+            avg_out = round(bm["output"] / bm["runs"]) if bm["runs"] > 0 else 0
+            avg_tok_s = round(bm["output"] / infer_s, 1) if bm["output"] > 0 else 0
+            mp = match_model_pricing(m)
+            mc = estimate_cost(bm["input"], bm["output"], bm["cache_read"], bm["cache_write"], mp)
+            by_model_list.append({
+                "model": m,
+                "runs": bm["runs"],
+                "input": bm["input"],
+                "output": bm["output"],
+                "cache_read": bm["cache_read"],
+                "cache_write": bm["cache_write"],
+                "avg_output_per_run": avg_out,
+                "avg_tok_per_s": avg_tok_s,
+                "estimated_cost": mc["total_cost"] if mc else 0,
+            })
+
+        # by_hour list sorted
+        by_hour_list = []
+        for h in sorted(by_hour.keys()):
+            by_hour_list.append({"hour": h, "runs": by_hour[h]["runs"], "output": by_hour[h]["output"]})
+
+        # top 5 expensive runs
+        run_costs.sort(key=lambda x: x["output"], reverse=True)
+        top5 = run_costs[:5]
+
+        # efficiency
+        total_tokens_all = total_cache_read + total_cache_write + total_input
+        cache_hit = round(total_cache_read / total_tokens_all * 100, 1) if total_tokens_all > 0 else 0
+        n_runs = len(runs)
+        avg_out_per_run = round(total_output / n_runs) if n_runs > 0 else 0
+        avg_infer_s = round(total_infer_ms / n_runs / 1000.0, 1) if n_runs > 0 else 0
+        infer_s_total = total_infer_ms / 1000.0 if total_infer_ms > 0 else 1
+        avg_tok_s = round(total_output / infer_s_total, 1) if total_output > 0 else 0
+        total_time = total_infer_ms + total_tool_ms
+        tool_overhead = round(total_tool_ms / total_time * 100, 1) if total_time > 0 else 0
+
+        return {
+            "date": date,
+            "total_runs": n_runs,
+            "token_totals": {
+                "input": total_input,
+                "output": total_output,
+                "cache_read": total_cache_read,
+                "cache_write": total_cache_write,
+            },
+            "cost_estimate": cost_est,
+            "by_model": by_model_list,
+            "by_hour": by_hour_list,
+            "top_expensive_runs": top5,
+            "efficiency": {
+                "cache_hit_ratio": cache_hit,
+                "avg_output_per_run": avg_out_per_run,
+                "avg_inference_time_s": avg_infer_s,
+                "avg_tok_per_s": avg_tok_s,
+                "tool_overhead_ratio": tool_overhead,
+            },
+        }
+
 
 # ============================================================
 # 前端 HTML/CSS/JS
@@ -872,6 +1281,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 a{color:var(--accent);text-decoration:none}
 .container{max-width:1400px;margin:0 auto;padding:16px}
 
+/* 系统信息栏 */
+.sysinfo-bar{background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden}
+.sysinfo-header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;cursor:pointer;font-size:13px;color:var(--text2);user-select:none}
+.sysinfo-header:hover{background:var(--hover)}
+.sysinfo-header .sysinfo-summary{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+.sysinfo-header .sysinfo-summary span{color:var(--text)}
+.sysinfo-header .sysinfo-summary .sep{color:var(--border)}
+.sysinfo-header .toggle-icon{transition:transform .2s;font-size:11px}
+.sysinfo-header.open .toggle-icon{transform:rotate(180deg)}
+.sysinfo-detail{display:none;padding:12px 16px;border-top:1px solid var(--border);font-size:12px;color:var(--text2)}
+.sysinfo-detail.open{display:block}
+.sysinfo-detail .sysinfo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 24px}
+.sysinfo-detail .si-item{display:flex;gap:8px}
+.sysinfo-detail .si-label{color:var(--text2);min-width:100px}
+.sysinfo-detail .si-value{color:var(--text)}
+
 /* 顶部栏 */
 .header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 0;border-bottom:1px solid var(--border);margin-bottom:20px}
 .header h1{font-size:1.5em;color:#fff;white-space:nowrap}
@@ -889,10 +1314,47 @@ a{color:var(--accent);text-decoration:none}
 .card .label{font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:1px}
 .card.error .value{color:var(--red)}
 
+/* Token 分析板块 */
+.token-analysis{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin-bottom:24px;overflow:hidden}
+.ta-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;cursor:pointer;user-select:none}
+.ta-header:hover{background:var(--hover)}
+.ta-header h2{font-size:1.1em;color:var(--accent);font-weight:600}
+.ta-header .toggle-icon{color:var(--text2);transition:transform .2s;font-size:11px}
+.ta-header.open .toggle-icon{transform:rotate(180deg)}
+.ta-body{display:none;padding:0 18px 18px}
+.ta-body.open{display:block}
+.ta-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px}
+.ta-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;text-align:center}
+.ta-card .tc-val{font-size:1.5em;font-weight:700;color:#fff}
+.ta-card .tc-lbl{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px}
+.ta-card.cost .tc-val{color:var(--yellow)}
+.ta-section{margin-bottom:16px}
+.ta-section h3{font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;font-weight:600}
+
+/* 柱状图 */
+.bar-chart{display:flex;align-items:flex-end;gap:6px;height:120px;padding:0 4px}
+.bar-col{display:flex;flex-direction:column;align-items:center;flex:1;min-width:30px}
+.bar-col .bar{background:var(--accent);border-radius:3px 3px 0 0;min-height:2px;width:100%;max-width:40px;transition:height .3s}
+.bar-col .bar-label{font-size:10px;color:var(--text2);margin-top:4px;white-space:nowrap}
+.bar-col .bar-val{font-size:10px;color:var(--text);margin-bottom:2px}
+
+/* 效率指标 */
+.efficiency-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.eff-item{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center}
+.eff-item .ev{font-size:1.3em;font-weight:700;color:#fff}
+.eff-item .el{font-size:11px;color:var(--text2)}
+
+/* 优化建议 */
+.suggestions{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 16px}
+.suggestions .sug-item{padding:6px 0;font-size:13px;color:var(--text);border-bottom:1px solid rgba(255,255,255,.05)}
+.suggestions .sug-item:last-child{border-bottom:none}
+.suggestions .sug-icon{margin-right:6px}
+
 /* 表格 */
 .table-wrap{overflow-x:auto;margin-bottom:20px}
+.runs-scroll{max-height:600px;overflow-y:auto}
 table{width:100%;border-collapse:collapse;font-size:14px}
-th{background:var(--bg3);color:var(--text);padding:10px 12px;text-align:left;position:sticky;top:0;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+th{background:var(--bg3);color:var(--text);padding:10px 12px;text-align:left;position:sticky;top:0;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px;z-index:2}
 td{padding:10px 12px;border-bottom:1px solid var(--border)}
 tr:nth-child(even) td{background:rgba(255,255,255,.02)}
 tr.clickable{cursor:pointer;transition:background .15s}
@@ -905,6 +1367,14 @@ tr.clickable:hover td{background:var(--hover)}
 .slow{color:var(--red);font-weight:600}
 .medium{color:var(--yellow)}
 .mono{font-family:"SF Mono",Monaco,Consolas,monospace;font-size:13px}
+
+/* 分页 */
+.pagination{display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;font-size:13px;color:var(--text2)}
+.pagination button{padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px;cursor:pointer}
+.pagination button:hover:not(:disabled){border-color:var(--accent);color:#fff}
+.pagination button:disabled{opacity:.4;cursor:not-allowed}
+.pagination select{padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px}
+.pagination .page-info{color:var(--text)}
 
 /* Run 详情展开 */
 .run-detail{display:none;background:var(--bg);border:1px solid var(--border);border-radius:8px;margin:4px 0 12px;padding:20px}
@@ -933,6 +1403,7 @@ tr.clickable:hover td{background:var(--hover)}
 .detail-table{width:100%;border-collapse:collapse;font-size:13px}
 .detail-table th{background:rgba(255,255,255,.05);padding:6px 8px;text-align:left;font-size:11px}
 .detail-table td{padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.05)}
+.detail-table td.tool-args{white-space:pre-wrap;word-break:break-all;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:11px;max-width:500px}
 
 /* 汇总条 */
 .summary-bar{display:flex;gap:20px;flex-wrap:wrap;padding:12px 16px;background:var(--card);border-radius:8px;border:1px solid var(--border);margin-top:12px;font-size:13px}
@@ -957,15 +1428,26 @@ tr.clickable:hover td{background:var(--hover)}
 </head>
 <body>
 <div class="container">
+  <div id="sysInfoBar" class="sysinfo-bar" style="display:none"></div>
   <div class="header">
     <h1>🔍 <span>OpenClaw</span> 诊断面板</h1>
     <div class="controls">
       <select id="dateSelect"></select>
       <button onclick="refresh()">🔄 刷新</button>
-      <label><input type="checkbox" id="autoRefresh"> 自动刷新 (30s)</label>
+      <label>自动刷新:
+        <select id="autoRefreshSelect">
+          <option value="0">关闭</option>
+          <option value="5000">5s</option>
+          <option value="10000">10s</option>
+          <option value="30000" selected>30s</option>
+          <option value="60000">1min</option>
+          <option value="300000">5min</option>
+        </select>
+      </label>
     </div>
   </div>
   <div id="summaryCards" class="cards"></div>
+  <div id="tokenAnalysis"></div>
   <div id="content"></div>
 </div>
 
@@ -974,9 +1456,11 @@ tr.clickable:hover td{background:var(--hover)}
 var BASE = '';
 var currentDate = '';
 var autoTimer = null;
-var openRuns = {};  // run_id -> true
+var autoInterval = 30000;
+var openRuns = {};
+var currentPage = 1;
+var perPage = 20;
 
-// 工具函数
 function $(sel){return document.querySelector(sel)}
 function $$(sel){return document.querySelectorAll(sel)}
 function fmtMs(ms){
@@ -988,7 +1472,13 @@ function fmtMs(ms){
 function fmtTok(n){
   if(!n) return '0';
   if(n<1000) return n.toString();
-  return (n/1000).toFixed(1)+'k';
+  if(n<1000000) return (n/1000).toFixed(1)+'k';
+  return (n/1000000).toFixed(2)+'M';
+}
+function fmtCost(n){
+  if(!n && n!==0) return '-';
+  if(n<0.01) return '$'+n.toFixed(4);
+  return '$'+n.toFixed(2);
 }
 function speedClass(ms){
   if(ms>5000) return 'slow';
@@ -1005,7 +1495,6 @@ function escHtml(s){
   var d=document.createElement('div');d.textContent=s;return d.innerHTML;
 }
 
-// API 调用
 function api(path,cb){
   var x=new XMLHttpRequest();
   x.open('GET',BASE+path);
@@ -1017,7 +1506,64 @@ function api(path,cb){
   x.send();
 }
 
-// 加载日期列表
+// ---- System Info ----
+function loadSystemInfo(){
+  api('/api/system_info',function(info){
+    if(!info) return;
+    var bar=$('#sysInfoBar');
+    bar.style.display='block';
+    var ver=info.openclaw_version||'?';
+    var model=info.default_model||'?';
+    // shorten model name for display
+    var modelShort=model.split('.').pop().replace(/-v\d+$/,'');
+    var channels=(info.channels||[]).join(', ')||'-';
+    var host=info.hostname||'?';
+
+    var html='<div class="sysinfo-header" onclick="toggleSysInfo(this)">';
+    html+='<div class="sysinfo-summary">';
+    html+='<span>🟢 OpenClaw <strong>'+escHtml(ver)+'</strong></span>';
+    html+='<span class="sep">|</span>';
+    html+='<span>Model: <strong>'+escHtml(modelShort)+'</strong></span>';
+    html+='<span class="sep">|</span>';
+    html+='<span>Channels: <strong>'+escHtml(channels)+'</strong></span>';
+    html+='<span class="sep">|</span>';
+    html+='<span>Host: <strong>'+escHtml(host)+'</strong></span>';
+    html+='</div>';
+    html+='<span class="toggle-icon">▼</span>';
+    html+='</div>';
+    html+='<div class="sysinfo-detail"><div class="sysinfo-grid">';
+    var items=[
+      ['版本',info.openclaw_version],
+      ['配置文件',info.openclaw_config_path],
+      ['诊断',info.diagnostics_enabled?'已开启':'未开启'],
+      ['日志级别',info.logging_level],
+      ['默认模型',info.default_model],
+      ['Agents',(info.agents||[]).join(', ')],
+      ['Channels',(info.channels||[]).join(', ')],
+      ['Python',info.python_version],
+      ['平台',info.platform],
+      ['主机名',info.hostname],
+      ['CPU',info.cpu_count+' 核'],
+      ['内存',info.memory_used_mb+'MB / '+info.memory_total_mb+'MB'],
+      ['日志目录',info.log_dir],
+      ['日志文件数',info.log_file_count],
+      ['会话目录数',info.sessions_dir_count],
+      ['会话文件数',info.session_file_count],
+    ];
+    items.forEach(function(it){
+      html+='<div class="si-item"><span class="si-label">'+escHtml(it[0])+'</span><span class="si-value">'+escHtml(String(it[1]||'-'))+'</span></div>';
+    });
+    html+='</div></div>';
+    bar.innerHTML=html;
+  });
+}
+window.toggleSysInfo=function(el){
+  el.classList.toggle('open');
+  var detail=el.nextElementSibling;
+  if(detail) detail.classList.toggle('open');
+};
+
+// ---- Dates ----
 function loadDates(){
   api('/api/dates',function(dates){
     var sel=$('#dateSelect');
@@ -1040,6 +1586,7 @@ function loadDates(){
 
 function showEmpty(){
   $('#summaryCards').innerHTML='';
+  $('#tokenAnalysis').innerHTML='';
   $('#content').innerHTML='<div class="empty"><div class="icon">📭</div><p>暂无诊断数据</p><p style="margin-top:8px;font-size:13px">等待 OpenClaw 生成日志后自动显示</p></div>';
 }
 
@@ -1047,15 +1594,17 @@ function showLoading(){
   $('#content').innerHTML='<div class="loading"><span class="spinner"></span>加载中...</div>';
 }
 
-// 加载摘要 + 列表
 function loadData(){
   showLoading();
   var d=currentDate;
   api('/api/summary?date='+d,function(summary){
     renderSummary(summary);
   });
-  api('/api/runs?date='+d,function(runs){
-    renderRunsList(runs);
+  api('/api/token_analysis?date='+d,function(ta){
+    renderTokenAnalysis(ta);
+  });
+  api('/api/runs?date='+d+'&page='+currentPage+'&per_page='+perPage,function(data){
+    renderRunsList(data);
   });
 }
 
@@ -1074,19 +1623,135 @@ function renderSummary(s){
   $('#summaryCards').innerHTML=html;
 }
 
-function renderRunsList(runs){
-  if(!runs||runs.length===0){
+// ---- Token Analysis ----
+function renderTokenAnalysis(ta){
+  var el=$('#tokenAnalysis');
+  if(!ta||ta.total_runs===0){el.innerHTML='';return;}
+  var tt=ta.token_totals||{};
+  var ce=ta.cost_estimate||{};
+  var eff=ta.efficiency||{};
+  var html='<div class="token-analysis">';
+  html+='<div class="ta-header open" onclick="toggleTA(this)"><h2>💰 Token 消耗与成本分析</h2><span class="toggle-icon">▼</span></div>';
+  html+='<div class="ta-body open">';
+
+  // Cards
+  html+='<div class="ta-cards">';
+  html+='<div class="ta-card"><div class="tc-val">'+fmtTok(tt.input)+'</div><div class="tc-lbl">总输入</div></div>';
+  html+='<div class="ta-card"><div class="tc-val">'+fmtTok(tt.output)+'</div><div class="tc-lbl">总输出</div></div>';
+  html+='<div class="ta-card"><div class="tc-val">'+eff.cache_hit_ratio+'%</div><div class="tc-lbl">缓存命中率</div></div>';
+  html+='<div class="ta-card cost"><div class="tc-val">'+fmtCost(ce.total_cost)+'</div><div class="tc-lbl">预估费用</div></div>';
+  html+='</div>';
+
+  // By hour chart
+  if(ta.by_hour && ta.by_hour.length>0){
+    html+='<div class="ta-section"><h3>📊 按小时分布</h3>';
+    var maxOut=0;
+    ta.by_hour.forEach(function(h){if(h.output>maxOut)maxOut=h.output;});
+    if(maxOut===0)maxOut=1;
+    html+='<div class="bar-chart">';
+    ta.by_hour.forEach(function(h){
+      var pct=Math.max(2,Math.round(h.output/maxOut*100));
+      html+='<div class="bar-col">';
+      html+='<div class="bar-val">'+h.runs+'</div>';
+      html+='<div class="bar" style="height:'+pct+'%"></div>';
+      html+='<div class="bar-label">'+h.hour+'</div>';
+      html+='</div>';
+    });
+    html+='</div></div>';
+  }
+
+  // By model table
+  if(ta.by_model && ta.by_model.length>0){
+    html+='<div class="ta-section"><h3>🤖 按模型分布</h3>';
+    html+='<table class="detail-table"><thead><tr><th>模型</th><th>Run 数</th><th>输出 Token</th><th>平均速率</th><th>预估费用</th></tr></thead><tbody>';
+    ta.by_model.forEach(function(m){
+      html+='<tr><td>'+escHtml(m.model)+'</td><td>'+m.runs+'</td><td>'+fmtTok(m.output)+'</td><td>'+m.avg_tok_per_s+' tok/s</td><td>'+fmtCost(m.estimated_cost)+'</td></tr>';
+    });
+    html+='</tbody></table></div>';
+  }
+
+  // Top 5 expensive
+  if(ta.top_expensive_runs && ta.top_expensive_runs.length>0){
+    html+='<div class="ta-section"><h3>🔥 Top 5 高消耗 Run</h3>';
+    html+='<table class="detail-table"><thead><tr><th>Run ID</th><th>时间</th><th>输出 Token</th><th>耗时</th><th>工具数</th><th>预估费用</th></tr></thead><tbody>';
+    ta.top_expensive_runs.forEach(function(r){
+      var sid=r.run_id.substring(0,8);
+      html+='<tr class="clickable" onclick="scrollToRun(\''+escHtml(r.run_id)+'\')">';
+      html+='<td class="mono" title="'+escHtml(r.run_id)+'">'+escHtml(sid)+'</td>';
+      html+='<td class="mono">'+escHtml(r.start)+'</td>';
+      html+='<td>'+fmtTok(r.output)+'</td>';
+      html+='<td>'+fmtMs(r.duration_ms)+'</td>';
+      html+='<td>'+r.tool_count+'</td>';
+      html+='<td>'+fmtCost(r.estimated_cost)+'</td>';
+      html+='</tr>';
+    });
+    html+='</tbody></table></div>';
+  }
+
+  // Efficiency
+  html+='<div class="ta-section"><h3>⚡ 效率指标</h3>';
+  html+='<div class="efficiency-grid">';
+  html+='<div class="eff-item"><div class="ev">'+eff.cache_hit_ratio+'%</div><div class="el">缓存命中率</div></div>';
+  html+='<div class="eff-item"><div class="ev">'+eff.avg_output_per_run+'</div><div class="el">平均每 Run 输出</div></div>';
+  html+='<div class="eff-item"><div class="ev">'+eff.avg_tok_per_s+' tok/s</div><div class="el">平均推理速率</div></div>';
+  html+='<div class="eff-item"><div class="ev">'+eff.tool_overhead_ratio+'%</div><div class="el">工具开销占比</div></div>';
+  html+='</div></div>';
+
+  // Suggestions
+  var sugs=[];
+  if(eff.cache_hit_ratio<50) sugs.push({icon:'💡',text:'缓存命中率较低 ('+eff.cache_hit_ratio+'%), 考虑减少 /reset 频率以保持缓存'});
+  if(eff.avg_tok_per_s>0 && eff.avg_tok_per_s<20) sugs.push({icon:'🚀',text:'输出速率较慢 ('+eff.avg_tok_per_s+' tok/s), 考虑切换更快的模型（如 Sonnet）'});
+  if(eff.tool_overhead_ratio>20) sugs.push({icon:'🔧',text:'工具执行开销较大 ('+eff.tool_overhead_ratio+'%), 检查是否有慢工具可优化'});
+  if(ce.total_cost>5) sugs.push({icon:'💸',text:'今日预估费用较高 ('+fmtCost(ce.total_cost)+'), 考虑对非关键对话使用更经济的模型'});
+  if(sugs.length>0){
+    html+='<div class="ta-section"><h3>💡 优化建议</h3><div class="suggestions">';
+    sugs.forEach(function(s){
+      html+='<div class="sug-item"><span class="sug-icon">'+s.icon+'</span>'+escHtml(s.text)+'</div>';
+    });
+    html+='</div></div>';
+  }
+
+  html+='</div></div>';
+  el.innerHTML=html;
+}
+window.toggleTA=function(el){
+  el.classList.toggle('open');
+  var body=el.nextElementSibling;
+  if(body) body.classList.toggle('open');
+};
+window.scrollToRun=function(rid){
+  var row=document.querySelector('tr[data-runid="'+rid+'"]');
+  if(row){
+    row.scrollIntoView({behavior:'smooth',block:'center'});
+    row.style.background='var(--bg3)';
+    setTimeout(function(){row.style.background='';},2000);
+  }
+};
+
+// ---- Runs List ----
+function renderRunsList(data){
+  if(!data){$('#content').innerHTML='<div class="empty"><div class="icon">📭</div><p>加载失败</p></div>';return;}
+  var runs=data.runs||[];
+  var total=data.total||0;
+  var page=data.page||1;
+  var pp=data.per_page||20;
+  var totalPages=data.total_pages||1;
+  currentPage=page;
+
+  if(total===0){
     $('#content').innerHTML='<div class="empty"><div class="icon">📭</div><p>该日期暂无 Run 数据</p></div>';
     return;
   }
-  var html='<div class="table-wrap"><table><thead><tr>';
-  html+='<th>时间</th><th>Run ID</th><th>模型</th><th>通道</th><th>端到端</th><th>推理</th><th>工具</th><th>工具数</th><th>输出Token</th><th>状态</th>';
+  var colSpan=12;
+  var html='<div class="table-wrap"><div class="runs-scroll" id="runsScroll"><table><thead><tr>';
+  html+='<th>开始</th><th>结束</th><th>Run ID</th><th>模型</th><th>通道</th><th>端到端</th><th>推理</th><th>工具</th><th>工具数</th><th>输出Token</th><th>状态</th>';
   html+='</tr></thead><tbody>';
   runs.forEach(function(r){
     var durCls=speedClass(r.duration_ms);
     var short_id=r.run_id.substring(0,8);
     html+='<tr class="clickable" data-runid="'+escHtml(r.run_id)+'" onclick="toggleRun(this)">';
     html+='<td class="mono">'+escHtml(r.start)+'</td>';
+    html+='<td class="mono">'+escHtml(r.end||'-')+'</td>';
     html+='<td class="mono" title="'+escHtml(r.run_id)+'">'+escHtml(short_id)+'</td>';
     html+='<td>'+escHtml(shortModel(r.model))+'</td>';
     html+='<td>'+escHtml(r.channel)+'</td>';
@@ -1097,11 +1762,24 @@ function renderRunsList(runs){
     html+='<td>'+fmtTok(r.token_output)+'</td>';
     html+='<td class="'+statusClass(r.status)+'">'+statusIcon(r.status)+'</td>';
     html+='</tr>';
-    html+='<tr class="detail-row"><td colspan="10"><div class="run-detail" id="detail-'+escHtml(r.run_id)+'"></div></td></tr>';
+    html+='<tr class="detail-row"><td colspan="'+colSpan+'"><div class="run-detail" id="detail-'+escHtml(r.run_id)+'"></div></td></tr>';
   });
   html+='</tbody></table></div>';
+
+  // Pagination
+  html+='<div class="pagination">';
+  html+='<button onclick="goPage('+(page-1)+')"'+(page<=1?' disabled':'')+'>◀ 上一页</button>';
+  html+='<span class="page-info">第 '+page+' / '+totalPages+' 页 (共 '+total+' 条)</span>';
+  html+='<button onclick="goPage('+(page+1)+')"'+(page>=totalPages?' disabled':'')+'>下一页 ▶</button>';
+  html+='<select onchange="changePerPage(this.value)">';
+  [20,50,100].forEach(function(n){
+    html+='<option value="'+n+'"'+(n===pp?' selected':'')+'>'+n+' 条/页</option>';
+  });
+  html+='</select>';
+  html+='</div></div>';
+
   $('#content').innerHTML=html;
-  // 恢复展开状态
+  // Restore open details
   Object.keys(openRuns).forEach(function(rid){
     var el=document.getElementById('detail-'+rid);
     if(el){
@@ -1111,15 +1789,29 @@ function renderRunsList(runs){
   });
 }
 
+window.goPage=function(p){
+  currentPage=p;
+  var sc=$('#runsScroll');
+  if(sc) sc.scrollTop=0;
+  api('/api/runs?date='+currentDate+'&page='+currentPage+'&per_page='+perPage,function(data){
+    renderRunsList(data);
+  });
+};
+window.changePerPage=function(v){
+  perPage=parseInt(v)||20;
+  currentPage=1;
+  api('/api/runs?date='+currentDate+'&page=1&per_page='+perPage,function(data){
+    renderRunsList(data);
+  });
+};
+
 function shortModel(m){
   if(!m) return '';
-  // us.anthropic.claude-opus-4-6-v1 -> claude-opus-4-6
   var parts=m.split('.');
   var last=parts[parts.length-1];
   return last.replace(/-v\d+$/,'');
 }
 
-// 展开/收起 Run 详情
 window.toggleRun=function(tr){
   var rid=tr.getAttribute('data-runid');
   var el=document.getElementById('detail-'+rid);
@@ -1145,7 +1837,14 @@ function loadRunDetail(rid,el){
 function renderRunDetail(d,el){
   var html='';
 
-  // 甘特图
+  // Timing info
+  html+='<div style="margin-bottom:12px;font-size:13px;color:var(--text2)">';
+  html+='开始: <strong style="color:var(--text)">'+escHtml(d.start)+'</strong>';
+  html+=' &nbsp;结束: <strong style="color:var(--text)">'+escHtml(d.end||'-')+'</strong>';
+  html+=' &nbsp;输出速率: <strong style="color:var(--text)">'+(d.overall_tok_per_s||0)+' tok/s</strong>';
+  html+='</div>';
+
+  // Gantt
   html+='<div class="gantt-legend"><span><span class="dot infer"></span>推理</span><span><span class="dot tool"></span>工具</span><span style="margin-left:auto;font-size:11px;color:var(--text2)">总耗时: '+fmtMs(d.duration_ms)+'</span></div>';
   html+='<div class="gantt">';
   if(d.gantt){
@@ -1162,7 +1861,7 @@ function renderRunDetail(d,el){
 
   html+='<div class="detail-grid">';
 
-  // 推理分段
+  // Infer segments
   html+='<div class="detail-section"><h4>推理分段</h4>';
   if(d.infer_segments && d.infer_segments.length>0){
     html+='<table class="detail-table"><thead><tr><th>阶段</th><th>耗时</th><th>输出 Token</th><th>速率</th></tr></thead><tbody>';
@@ -1176,15 +1875,14 @@ function renderRunDetail(d,el){
   }
   html+='</div>';
 
-  // 工具调用
+  // Tools
   html+='<div class="detail-section"><h4>工具调用 ('+d.tool_count+')</h4>';
   if(d.tools && d.tools.length>0){
     html+='<table class="detail-table"><thead><tr><th>工具</th><th>参数</th><th>耗时</th></tr></thead><tbody>';
     d.tools.forEach(function(t){
       var dc=speedClass(t.duration_ms);
       var argText=t.arguments_summary||'';
-      if(argText.length>100) argText=argText.substring(0,100)+'...';
-      html+='<tr><td><strong>'+escHtml(t.tool)+'</strong></td><td class="mono" style="font-size:11px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(t.arguments_summary)+'">'+escHtml(argText)+'</td><td class="'+dc+'">'+fmtMs(t.duration_ms)+'</td></tr>';
+      html+='<tr><td><strong>'+escHtml(t.tool)+'</strong></td><td class="tool-args" title="'+escHtml(argText)+'">'+escHtml(argText)+'</td><td class="'+dc+'">'+fmtMs(t.duration_ms)+'</td></tr>';
     });
     html+='</tbody></table>';
   }else{
@@ -1194,20 +1892,28 @@ function renderRunDetail(d,el){
 
   html+='</div>';
 
-  // 汇总条
+  // Summary bar
   html+='<div class="summary-bar">';
   html+='<div class="item"><div class="val">'+fmtMs(d.duration_ms)+'</div><div class="lbl">端到端</div></div>';
   html+='<div class="item"><div class="val">'+fmtMs(d.infer_ms)+'</div><div class="lbl">推理总耗时</div></div>';
   html+='<div class="item"><div class="val">'+fmtMs(d.tool_ms)+'</div><div class="lbl">工具总耗时</div></div>';
   html+='<div class="item"><div class="val">'+fmtTok(d.total_tokens_output)+'</div><div class="lbl">输出 Token</div></div>';
-  html+='<div class="item"><div class="val">'+(d.overall_tok_per_s||0)+' tok/s</div><div class="lbl">平均输出速率</div></div>';
+  html+='<div class="item"><div class="val">'+(d.overall_tok_per_s||0)+' tok/s</div><div class="lbl">输出速率</div></div>';
   html+='<div class="item"><div class="val">'+escHtml(d.model)+'</div><div class="lbl">模型</div></div>';
   html+='<div class="item"><div class="val">'+escHtml(d.channel)+'</div><div class="lbl">通道</div></div>';
   html+='</div>';
 
-  // Prompt 信息
+  // Token summary
+  if(d.token_summary){
+    var ts=d.token_summary;
+    html+='<div style="margin-top:8px;font-size:12px;color:var(--text2)">';
+    html+='Token: input='+fmtTok(ts.input)+' output='+fmtTok(ts.output)+' cacheRead='+fmtTok(ts.cacheRead)+' cacheWrite='+fmtTok(ts.cacheWrite);
+    html+='</div>';
+  }
+
+  // Prompt info
   if(d.prompt_info && d.prompt_info.messages){
-    html+='<div style="margin-top:12px;font-size:12px;color:var(--text2)">';
+    html+='<div style="margin-top:4px;font-size:12px;color:var(--text2)">';
     html+='Prompt: messages='+escHtml(d.prompt_info.messages);
     if(d.prompt_info.historyTextChars) html+=' historyChars='+escHtml(d.prompt_info.historyTextChars);
     if(d.prompt_info.systemPromptChars) html+=' sysPromptChars='+escHtml(d.prompt_info.systemPromptChars);
@@ -1217,27 +1923,33 @@ function renderRunDetail(d,el){
   el.innerHTML=html;
 }
 
-// 日期切换
+// Date change
 $('#dateSelect').addEventListener('change',function(){
   currentDate=this.value;
+  currentPage=1;
   openRuns={};
   loadData();
 });
 
-// 自动刷新
-$('#autoRefresh').addEventListener('change',function(){
-  if(this.checked){
-    autoTimer=setInterval(function(){loadData()},30000);
-  }else{
-    if(autoTimer){clearInterval(autoTimer);autoTimer=null;}
+// Auto refresh
+function setupAutoRefresh(ms){
+  if(autoTimer){clearInterval(autoTimer);autoTimer=null;}
+  autoInterval=ms;
+  if(ms>0){
+    autoTimer=setInterval(function(){loadData()},ms);
   }
+}
+$('#autoRefreshSelect').addEventListener('change',function(){
+  setupAutoRefresh(parseInt(this.value)||0);
 });
 
-// 全局刷新
 window.refresh=function(){loadData()};
 
-// 启动
+// Start
+loadSystemInfo();
 loadDates();
+// Start default auto-refresh
+setupAutoRefresh(autoInterval);
 })();
 </script>
 </body>
@@ -1251,16 +1963,15 @@ loadDates();
 class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP 请求处理器"""
 
-    # 类属性，由 main 设置
     data_store = None
     access_token = None
+    config_path = None
+    config_data = None
 
     def log_message(self, format, *args):
-        """静默日志或简化输出"""
         pass
 
     def _check_token(self, params):
-        """检查访问令牌"""
         if not self.access_token:
             return True
         tokens = params.get("token", [])
@@ -1269,7 +1980,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return False
 
     def _send_json(self, data, status=200):
-        """发送 JSON 响应"""
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1279,7 +1989,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_html(self, html, status=200):
-        """发送 HTML 响应"""
         body = html.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1302,6 +2011,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/dates":
                 dates = self.data_store.get_dates()
                 self._send_json(dates)
+            elif path == "/api/system_info":
+                info = get_system_info(self.data_store, self.config_path, self.config_data)
+                self._send_json(info)
             elif path == "/api/summary":
                 date = params.get("date", [""])[0]
                 if not date:
@@ -1315,10 +2027,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/runs":
                 date = params.get("date", [""])[0]
                 if not date:
-                    self._send_json([])
+                    self._send_json({"runs": [], "total": 0, "page": 1, "per_page": 20, "total_pages": 1})
                     return
-                runs = self.data_store.get_runs_list(date)
-                self._send_json(runs)
+                page = 1
+                per_page = 20
+                try:
+                    page = int(params.get("page", ["1"])[0])
+                except (ValueError, IndexError):
+                    pass
+                try:
+                    per_page = int(params.get("per_page", ["20"])[0])
+                except (ValueError, IndexError):
+                    pass
+                per_page = max(1, min(per_page, 500))
+                result = self.data_store.get_runs_list(date, page, per_page)
+                self._send_json(result)
+            elif path == "/api/token_analysis":
+                date = params.get("date", [""])[0]
+                if not date:
+                    self._send_json({"total_runs": 0})
+                    return
+                analysis = self.data_store.get_token_analysis(date)
+                self._send_json(analysis)
             elif path.startswith("/api/run/"):
                 run_id = path[len("/api/run/"):]
                 date = params.get("date", [""])[0]
@@ -1357,8 +2087,8 @@ def main():
     log_dir = detect_log_dir(args.log_dir)
     sessions_dirs = detect_sessions_dirs(args.sessions_dir)
 
-    # 检测 OpenClaw 配置是否开启了诊断
-    config_ok, config_warnings = check_openclaw_config()
+    # 检测 OpenClaw 配置
+    config_ok, config_warnings, config_path, config_data = check_openclaw_config()
 
     # 打印启动信息
     print("=" * 50)
@@ -1367,7 +2097,6 @@ def main():
     print("Python: %s" % platform.python_version())
     print("平台: %s" % platform.platform())
 
-    # 打印配置检测结果
     if config_ok:
         print("OpenClaw 配置: 诊断已开启")
     for w in config_warnings:
@@ -1391,6 +2120,8 @@ def main():
     store = DataStore(log_dir, sessions_dirs)
     DashboardHandler.data_store = store
     DashboardHandler.access_token = args.token if args.token else None
+    DashboardHandler.config_path = config_path
+    DashboardHandler.config_data = config_data
 
     # 信号处理
     def signal_handler(sig, frame):
@@ -1401,17 +2132,14 @@ def main():
     try:
         signal.signal(signal.SIGTERM, signal_handler)
     except (OSError, AttributeError):
-        pass  # Windows 上 SIGTERM 可能不存在
+        pass
 
-    # 绑定服务器（IPv6 回退 IPv4）
+    # 绑定服务器
     host = args.host
     port = args.port
     server = None
-    tried_ipv6 = False
 
     if host == "::":
-        # 尝试 IPv6
-        tried_ipv6 = True
         try:
             class IPv6Server(HTTPServer):
                 address_family = socket.AF_INET6
@@ -1428,7 +2156,6 @@ def main():
             print("请尝试其他端口: python3 %s --port %d" % (sys.argv[0], port + 1))
             sys.exit(1)
 
-    # 计算显示地址
     if host in ("0.0.0.0", "::"):
         display_host = "127.0.0.1"
     else:
@@ -1441,7 +2168,6 @@ def main():
     print("按 Ctrl+C 退出")
     print("=" * 50)
 
-    # 打开浏览器
     if not args.no_browser:
         try:
             import webbrowser
@@ -1449,7 +2175,6 @@ def main():
         except Exception:
             pass
 
-    # 启动服务
     try:
         server.serve_forever()
     except KeyboardInterrupt:
