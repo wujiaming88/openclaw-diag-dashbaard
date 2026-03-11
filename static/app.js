@@ -116,19 +116,6 @@ function fetchSummary(date) {
   });
 }
 
-function fetchEventsSummary(date) {
-  api('/api/events?date=' + date, function (data) {
-    renderEventsSummary(data);
-    renderPipeline(data);
-  });
-}
-
-function fetchWebhooks(date) {
-  api('/api/events/webhooks?date=' + date, function (data) {
-    renderWebhooks(data);
-  });
-}
-
 function fetchRuns(date, page, pp) {
   api('/api/runs?date=' + date + '&page=' + page + '&per_page=' + pp, function (data) {
     renderRunList(data);
@@ -226,7 +213,6 @@ function tipIcon(key) {
 function renderSummary(s) {
   if (!s || s.total_runs === 0) {
     $('#summaryCards').innerHTML = '';
-    $('#summaryCards2').innerHTML = '';
     return;
   }
   var html = '';
@@ -239,136 +225,6 @@ function renderSummary(s) {
   $('#summaryCards').innerHTML = html;
 }
 
-function renderEventsSummary(data) {
-  if (!data || !data.summary) {
-    $('#summaryCards2').innerHTML = '';
-    return;
-  }
-  var s = data.summary;
-  var mu = data.model_usage || {};
-  var ms_stats = data.message_stats || {};
-  var ss = data.session_stats || {};
-
-  var html2 = '';
-  html2 += '<div class="card"><div class="label">Webhook 数' + tipIcon('webhooks') + '</div><div class="value">' + s.webhooks_received + '</div></div>';
-  html2 += '<div class="card"><div class="label">消息处理' + tipIcon('msgProcessed') + '</div><div class="value">' + s.messages_processed + '</div></div>';
-  html2 += '<div class="card"><div class="label">平均处理时间' + tipIcon('avgProcessTime') + '</div><div class="value">' + fmtMs(ms_stats.avg_process_time_ms || 0) + '</div></div>';
-  html2 += '<div class="card"><div class="label">平均队列等待' + tipIcon('avgQueueWait') + '</div><div class="value">' + fmtMs(ms_stats.avg_queue_wait_ms || 0) + '</div></div>';
-  var stuckCls = ss.stuck_count > 0 ? ' warn' : '';
-  html2 += '<div class="card' + stuckCls + '"><div class="label">会话卡住' + tipIcon('sessionStuck') + '</div><div class="value">' + (ss.stuck_count || 0) + '</div></div>';
-  html2 += '<div class="card"><div class="label">总事件数' + tipIcon('totalEvents') + '</div><div class="value">' + s.total_events + '</div></div>';
-  $('#summaryCards2').innerHTML = html2;
-}
-
-// ============================================================
-// 渲染 — 消息处理流水线
-// ============================================================
-function renderPipeline(data) {
-  var sec = $('#pipelineSection');
-  var body = $('#pipelineBody');
-  if (!data || !data.summary) {
-    sec.style.display = 'none';
-    return;
-  }
-  sec.style.display = 'block';
-  var s = data.summary;
-  var ms_stats = data.message_stats || {};
-  var wh_stats = data.webhook_stats || {};
-
-  var stages = [
-    { name: 'Webhook\nReceived', count: s.webhooks_received, detail: '', icon: '📡' },
-    { name: 'Message\nQueued', count: s.messages_queued, detail: '', icon: '📥' },
-    { name: 'Queue\nEnqueue', count: s.queue_enqueues, detail: '', icon: '📋' },
-    { name: 'Queue\nDequeue', count: s.queue_dequeues, detail: 'avg wait: ' + fmtMs(ms_stats.avg_queue_wait_ms || 0), icon: '📤' },
-    { name: 'Run\nExecution', count: s.runs, detail: '', icon: '⚡' },
-    { name: 'Message\nProcessed', count: s.messages_processed, detail: 'avg: ' + fmtMs(ms_stats.avg_process_time_ms || 0), icon: '✅' },
-  ];
-
-  var html = '<div class="pipeline">';
-  stages.forEach(function (st, i) {
-    if (i > 0) html += '<div class="pipeline-arrow">→</div>';
-    var errCls = (st.name.indexOf('Error') >= 0 && st.count > 0) ? ' has-error' : '';
-    html += '<div class="pipeline-stage' + errCls + '">';
-    html += '<div class="stage-name">' + escHtml(st.icon + ' ' + st.name) + '</div>';
-    html += '<div class="stage-count">' + st.count + '</div>';
-    if (st.detail) html += '<div class="stage-detail">' + escHtml(st.detail) + '</div>';
-    html += '</div>';
-  });
-  // Show webhook errors separately
-  if (s.webhook_errors > 0) {
-    html += '<div class="pipeline-arrow" style="color:var(--red)">⚠</div>';
-    html += '<div class="pipeline-stage has-error">';
-    html += '<div class="stage-name">❌ Webhook\nErrors</div>';
-    html += '<div class="stage-count">' + s.webhook_errors + '</div>';
-    html += '</div>';
-  }
-  html += '</div>';
-
-  // Model usage summary
-  var mu = data.model_usage || {};
-  if (mu.total_output_tokens > 0 || mu.total_input_tokens > 0) {
-    html += '<div style="margin-top:12px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:13px;color:var(--text2)">';
-    html += '📊 <strong style="color:var(--text)">Token 用量:</strong> ';
-    html += 'Input: <strong style="color:var(--text)">' + fmtTok(mu.total_input_tokens) + '</strong> ';
-    html += 'Output: <strong style="color:var(--text)">' + fmtTok(mu.total_output_tokens) + '</strong> ';
-    html += 'Cache Read: <strong style="color:var(--text)">' + fmtTok(mu.total_cache_read) + '</strong> ';
-    html += 'Cache Write: <strong style="color:var(--text)">' + fmtTok(mu.total_cache_write) + '</strong>';
-    if (mu.total_cache_read > 0 && mu.total_input_tokens > 0) {
-      var hitRate = Math.round(mu.total_cache_read / (mu.total_cache_read + mu.total_input_tokens) * 100);
-      html += ' | 缓存命中率: <strong style="color:var(--green)">' + hitRate + '%</strong>';
-    }
-    html += '</div>';
-  }
-
-  body.innerHTML = html;
-}
-
-// ============================================================
-// 渲染 — Webhook 监控
-// ============================================================
-function renderWebhooks(data) {
-  var sec = $('#webhookSection');
-  var body = $('#webhookBody');
-  var badge = $('#webhookBadge');
-  if (!data || !data.webhooks || data.webhooks.length === 0) {
-    sec.style.display = 'none';
-    return;
-  }
-  sec.style.display = 'block';
-  badge.textContent = data.total + ' events';
-
-  var received = 0, errors = 0;
-  data.webhooks.forEach(function (w) {
-    if (w.type === 'webhook.received') received++;
-    if (w.type === 'webhook.error') errors++;
-  });
-
-  var html = '<div class="webhook-stats">';
-  html += '<div class="webhook-stat"><div class="stat-val">' + received + '</div><div class="stat-lbl">Received</div></div>';
-  html += '<div class="webhook-stat"><div class="stat-val" style="color:' + (errors > 0 ? 'var(--red)' : 'var(--green)') + '">' + errors + '</div><div class="stat-lbl">Errors</div></div>';
-  html += '<div class="webhook-stat"><div class="stat-val">' + (received > 0 ? Math.round((received - errors) / received * 100) : 100) + '%</div><div class="stat-lbl">Success Rate</div></div>';
-  html += '</div>';
-
-  html += '<div class="webhook-list"><table class="detail-table"><thead><tr><th>时间</th><th>类型</th><th>渠道</th><th>详情</th></tr></thead><tbody>';
-  // Show last 50 webhooks
-  var shown = data.webhooks.slice(-50).reverse();
-  shown.forEach(function (w) {
-    var rowCls = w.type === 'webhook.error' ? ' class="error-row"' : '';
-    html += '<tr' + rowCls + '>';
-    html += '<td class="mono">' + escHtml(w.time) + '</td>';
-    html += '<td>' + eventTagHtml(w.type === 'webhook.error' ? 'error' : 'webhook') + '</td>';
-    html += '<td>' + escHtml(w.channel || '') + '</td>';
-    html += '<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml((w.detail || '').substring(0, 120)) + '</td>';
-    html += '</tr>';
-  });
-  html += '</tbody></table></div>';
-  body.innerHTML = html;
-}
-
-// ============================================================
-// 渲染 — 错误日志
-// ============================================================
-// ============================================================
 // 渲染 — Run 列表
 // ============================================================
 function renderRunList(data) {
@@ -541,7 +397,6 @@ function renderRunDetail(d, el) {
 // ============================================================
 function showEmpty() {
   $('#summaryCards').innerHTML = '';
-  $('#summaryCards2').innerHTML = '';
   $('#content').innerHTML = '<div class="empty"><div class="icon">📭</div><p>暂无诊断数据</p><p style="margin-top:8px;font-size:13px">等待 OpenClaw 生成日志后自动显示</p></div>';
 }
 
@@ -553,8 +408,6 @@ function loadData() {
   showLoading();
   var d = currentDate;
   fetchSummary(d);
-  fetchEventsSummary(d);
-  fetchWebhooks(d);
   fetchRuns(d, currentPage, perPage);
 }
 

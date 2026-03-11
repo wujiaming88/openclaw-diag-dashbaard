@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OpenClaw 诊断面板</title>
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
 <div class="container">
@@ -29,31 +29,11 @@
 
   <!-- 总览摘要卡片 -->
   <div id="summaryCards" class="cards"></div>
-  <div id="summaryCards2" class="cards"></div>
-
-  <!-- 消息处理流水线 -->
-  <div id="pipelineSection" class="section collapsible" style="display:none">
-    <div class="section-header" onclick="toggleSection(this)">
-      <h2>📡 消息处理流水线</h2>
-      <span class="toggle-icon">▼</span>
-    </div>
-    <div class="section-body open" id="pipelineBody"></div>
-  </div>
-
-  <!-- Webhook 监控 -->
-  <div id="webhookSection" class="section collapsible" style="display:none">
-    <div class="section-header" onclick="toggleSection(this)">
-      <h2>🌐 Webhook 监控</h2>
-      <span class="section-badge" id="webhookBadge"></span>
-      <span class="toggle-icon">▼</span>
-    </div>
-    <div class="section-body" id="webhookBody"></div>
-  </div>
 
   <!-- Run 列表 -->
   <div id="content"></div>
 
 </div>
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>
