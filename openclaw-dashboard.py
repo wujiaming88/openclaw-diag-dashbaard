@@ -726,130 +726,233 @@ def parse_session_files(sessions_dirs):
 
 
 def summarize_tool_args(tool_name, args_raw):
-    """提取工具参数的可读摘要（详细版）"""
+    """提取工具参数的完整可读摘要"""
     if isinstance(args_raw, dict):
         args = args_raw
     elif isinstance(args_raw, str):
         try:
             args = json.loads(args_raw)
         except (json.JSONDecodeError, ValueError):
-            return args_raw[:200] if args_raw else ""
+            return args_raw[:500] if args_raw else ""
     else:
-        return str(args_raw)[:200] if args_raw else ""
+        return str(args_raw)[:500] if args_raw else ""
     if not isinstance(args, dict):
-        return str(args)[:200]
+        return str(args)[:500]
+
     if tool_name == "exec":
         cmd = args.get("command", "")
-        cmd_preview = cmd[:200]
+        lines = [cmd]  # 完整命令
         wd = args.get("workdir", "")
-        parts = [cmd_preview]
         if wd:
-            parts.append("[cwd: %s]" % wd)
-        bg = args.get("background")
-        if bg:
-            parts.append("[background]")
+            lines.append("[cwd: %s]" % wd)
         timeout = args.get("timeout")
         if timeout:
-            parts.append("[timeout: %s]" % timeout)
-        return "\n".join(parts)
-    elif tool_name in ("read", "write"):
+            lines.append("[timeout: %ss]" % timeout)
+        bg = args.get("background")
+        if bg:
+            lines.append("[background]")
+        pty = args.get("pty")
+        if pty:
+            lines.append("[pty]")
+        env = args.get("env")
+        if env and isinstance(env, dict):
+            lines.append("[env: %s]" % " ".join("%s=%s" % (k, v) for k, v in env.items()))
+        return "\n".join(lines)
+
+    elif tool_name == "read":
         p = args.get("path", "") or args.get("file_path", "")
-        parts = [p]
+        lines = [p]
         offset = args.get("offset")
         limit = args.get("limit")
         if offset:
-            parts.append("offset=%s" % offset)
+            lines.append("offset=%s" % offset)
         if limit:
-            parts.append("limit=%s" % limit)
-        if tool_name == "write":
-            content = args.get("content", "")
-            if content:
-                parts.append("(%d chars)" % len(content))
-        return "  ".join(parts)
+            lines.append("limit=%s" % limit)
+        return "  ".join(lines)
+
+    elif tool_name == "write":
+        p = args.get("path", "") or args.get("file_path", "")
+        content = args.get("content", "")
+        lines = [p]
+        lines.append("(%d chars)" % len(content))
+        if content:
+            # 显示前 5 行内容预览
+            preview_lines = content.split("\n")[:5]
+            preview = "\n".join(preview_lines)
+            if len(content.split("\n")) > 5:
+                preview += "\n... (%d lines total)" % len(content.split("\n"))
+            lines.append("\n--- content preview ---\n%s" % preview)
+        return "  ".join(lines) if len(lines) <= 2 else lines[0] + "  " + lines[1] + lines[2]
+
     elif tool_name == "edit":
         p = args.get("path", "") or args.get("file_path", "")
         old = args.get("old_string", "") or args.get("oldText", "")
         new = args.get("new_string", "") or args.get("newText", "")
-        old_preview = old[:100] if old else ""
-        new_preview = new[:100] if new else ""
         lines = [p]
-        if old_preview:
-            lines.append("old: %s" % old_preview)
-        if new_preview:
-            lines.append("new: %s" % new_preview)
+        if old:
+            old_lines = old.split("\n")
+            old_preview = "\n".join(old_lines[:5])
+            if len(old_lines) > 5:
+                old_preview += "\n... (%d lines)" % len(old_lines)
+            lines.append("--- old (%d chars) ---\n%s" % (len(old), old_preview))
+        if new:
+            new_lines = new.split("\n")
+            new_preview = "\n".join(new_lines[:5])
+            if len(new_lines) > 5:
+                new_preview += "\n... (%d lines)" % len(new_lines)
+            lines.append("--- new (%d chars) ---\n%s" % (len(new), new_preview))
         return "\n".join(lines)
+
     elif tool_name == "web_search":
         q = args.get("query", "")
-        count = args.get("count", "")
-        parts = [q]
-        if count:
-            parts.append("count=%s" % count)
+        parts = ["query: %s" % q]
+        for k in ("count", "country", "language", "freshness", "date_after", "date_before"):
+            v = args.get(k)
+            if v:
+                parts.append("%s=%s" % (k, v))
         return "  ".join(parts)
+
     elif tool_name == "web_fetch":
         url = args.get("url", "")
-        mode = args.get("extractMode", "")
         parts = [url]
+        mode = args.get("extractMode", "")
+        maxc = args.get("maxChars")
         if mode:
             parts.append("mode=%s" % mode)
+        if maxc:
+            parts.append("maxChars=%s" % maxc)
         return "  ".join(parts)
+
     elif tool_name == "sessions_spawn":
+        lines = []
         agent = args.get("agentId", "")
-        task = args.get("task", "")[:100]
         label = args.get("label", "")
         model = args.get("model", "")
-        parts = ["agent=%s" % agent]
+        mode = args.get("mode", "")
+        timeout = args.get("runTimeoutSeconds", "")
+        task = args.get("task", "")
+        if agent:
+            lines.append("agent: %s" % agent)
         if label:
-            parts.append("label=%s" % label)
+            lines.append("label: %s" % label)
         if model:
-            parts.append("model=%s" % model)
+            lines.append("model: %s" % model)
+        if mode:
+            lines.append("mode: %s" % mode)
+        if timeout:
+            lines.append("timeout: %ss" % timeout)
         if task:
-            parts.append("\ntask: %s" % task)
-        return "  ".join(parts)
+            # 显示 task 前 500 字符
+            task_preview = task[:500]
+            if len(task) > 500:
+                task_preview += "\n... (%d chars total)" % len(task)
+            lines.append("--- task ---\n%s" % task_preview)
+        return "\n".join(lines)
+
+    elif tool_name in ("sessions_send", "sessions_history"):
+        lines = []
+        for k in ("sessionKey", "label", "message", "agentId", "timeoutSeconds", "includeTools", "limit"):
+            v = args.get(k)
+            if v is not None:
+                vs = str(v)
+                if len(vs) > 200:
+                    vs = vs[:200] + "..."
+                lines.append("%s: %s" % (k, vs))
+        return "\n".join(lines)
+
+    elif tool_name == "subagents":
+        lines = []
+        for k in ("action", "target", "message"):
+            v = args.get(k)
+            if v is not None:
+                vs = str(v)
+                if k == "message" and len(vs) > 500:
+                    vs = vs[:500] + "\n... (%d chars)" % len(str(args.get(k, "")))
+                lines.append("%s: %s" % (k, vs))
+        return "\n".join(lines)
+
     elif tool_name == "message":
-        action = args.get("action", "")
-        target = args.get("target", "")
-        msg = args.get("message", "")[:100]
-        parts = ["action=%s" % action]
-        if target:
-            parts.append("target=%s" % target)
-        if msg:
-            parts.append("\n%s" % msg)
-        return "  ".join(parts)
+        lines = []
+        for k in ("action", "target", "channel", "message", "replyTo", "filePath", "media", "caption"):
+            v = args.get(k)
+            if v is not None:
+                vs = str(v)
+                if len(vs) > 200:
+                    vs = vs[:200] + "..."
+                lines.append("%s: %s" % (k, vs))
+        return "\n".join(lines)
+
     elif tool_name == "browser":
-        action = args.get("action", "")
-        url = args.get("url", "")
-        ref = args.get("ref", "")
-        kind = args.get("kind", "")
-        text = args.get("text", "")
-        parts = ["action=%s" % action]
-        if url:
-            parts.append("url=%s" % url[:120])
-        if ref:
-            parts.append("ref=%s" % ref)
-        if kind:
-            parts.append("kind=%s" % kind)
-        if text:
-            parts.append("text=%s" % text[:80])
-        return "  ".join(parts)
+        lines = []
+        for k in ("action", "url", "ref", "kind", "text", "selector", "targetId", "profile", "key"):
+            v = args.get(k)
+            if v is not None:
+                lines.append("%s: %s" % (k, str(v)[:200]))
+        return "\n".join(lines)
+
+    elif tool_name == "process":
+        lines = []
+        for k in ("action", "sessionId", "timeout", "data", "keys"):
+            v = args.get(k)
+            if v is not None:
+                lines.append("%s: %s" % (k, str(v)[:200]))
+        return "\n".join(lines)
+
     elif tool_name == "memory_search":
-        return args.get("query", "")
+        q = args.get("query", "")
+        parts = ["query: %s" % q]
+        mr = args.get("maxResults")
+        if mr:
+            parts.append("maxResults=%s" % mr)
+        return "  ".join(parts)
+
     elif tool_name == "memory_get":
         p = args.get("path", "")
-        frm = args.get("from", "")
-        ln = args.get("lines", "")
-        parts = [p]
+        lines = [p]
+        frm = args.get("from")
+        ln = args.get("lines")
         if frm:
-            parts.append("from=%s" % frm)
+            lines.append("from=%s" % frm)
         if ln:
-            parts.append("lines=%s" % ln)
-        return "  ".join(parts)
-    else:
-        # 通用: 前几个 key=value
+            lines.append("lines=%s" % ln)
+        return "  ".join(lines)
+
+    elif tool_name == "canvas":
+        lines = []
+        for k in ("action", "url", "javaScript", "width", "height"):
+            v = args.get(k)
+            if v is not None:
+                lines.append("%s: %s" % (k, str(v)[:200]))
+        return "\n".join(lines)
+
+    elif tool_name == "nodes":
+        lines = []
+        for k in ("action", "node", "command", "facing", "duration"):
+            v = args.get(k)
+            if v is not None:
+                lines.append("%s: %s" % (k, str(v)[:200]))
+        return "\n".join(lines)
+
+    elif tool_name == "tts":
+        return args.get("text", "")[:200]
+
+    elif tool_name == "session_status":
         parts = []
-        for k, v in list(args.items())[:5]:
-            vs = str(v)[:80]
-            parts.append("%s=%s" % (k, vs))
-        return "  ".join(parts)
+        for k in ("model", "sessionKey"):
+            v = args.get(k)
+            if v:
+                parts.append("%s=%s" % (k, v))
+        return "  ".join(parts) if parts else "(no args)"
+
+    else:
+        # 通用: 显示所有参数
+        lines = []
+        for k, v in args.items():
+            vs = str(v)
+            if len(vs) > 300:
+                vs = vs[:300] + "... (%d chars)" % len(str(v))
+            lines.append("%s: %s" % (k, vs))
+        return "\n".join(lines) if lines else "(no args)"
 
 
 # ============================================================
