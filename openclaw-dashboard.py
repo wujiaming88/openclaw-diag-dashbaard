@@ -1393,6 +1393,7 @@ class DataStore(object):
         """返回某天的 run 列表（分页）"""
         runs = self._load_runs(date)
         tool_data = self._get_tool_data()
+        text_reply_usage = self._get_text_reply_usage()
         all_results = []
         for run in runs.values():
             infer_segs = compute_infer_segments(run)
@@ -1411,6 +1412,18 @@ class DataStore(object):
                 if uid not in seen_usage_ids and usage:
                     seen_usage_ids.add(uid)
                     token_output += usage.get("output", 0)
+            # 纯文本回复的 token（无 toolCall 或最后一段推理）
+            if run.get("start") and run.get("end"):
+                run_start_str = run["start"].strftime("%Y-%m-%dT%H:%M:%S")
+                run_end_str = run["end"].strftime("%Y-%m-%dT%H:%M:%S")
+                for ts_str, u in text_reply_usage:
+                    if id(u) in seen_usage_ids:
+                        continue
+                    ts_cmp = ts_str[:19]
+                    if ts_cmp >= run_start_str and ts_cmp <= run_end_str:
+                        seen_usage_ids.add(id(u))
+                        token_output += u.get("output", 0)
+                        break  # 一个 run 最多匹配一个 text reply
             status = "ok"
             if run.get("is_error"):
                 status = "error"
