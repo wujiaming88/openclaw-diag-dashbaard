@@ -345,10 +345,14 @@ def parse_log_events(filepath):
 # ============================================================
 
 def parse_session_files(sessions_dirs):
-    """解析会话文件，建立 toolCallId -> {arguments, usage} 映射"""
+    """解析会话文件，建立 toolCallId -> {arguments, usage} 映射
+    同时收集纯文本回复（无 toolCall）的 usage，按 timestamp 索引
+    返回: (tool_data, text_reply_usage)
+    """
     tool_data = {}  # toolCallId -> {tool, arguments_raw, arguments_summary, usage}
+    text_reply_usage = []  # [(timestamp_str, usage_dict)]
     if not sessions_dirs:
-        return tool_data
+        return tool_data, text_reply_usage
     files = []
     for d in sessions_dirs:
         pattern = os.path.join(d, "*.jsonl")
@@ -374,14 +378,17 @@ def parse_session_files(sessions_dirs):
             if model == "delivery-mirror":
                 continue
             usage = msg.get("usage", {})
+            timestamp = obj.get("timestamp", "")
             content = msg.get("content", [])
             if not isinstance(content, list):
                 continue
+            has_tool_call = False
             for item in content:
                 if not isinstance(item, dict):
                     continue
                 if item.get("type") != "toolCall":
                     continue
+                has_tool_call = True
                 tc_id = item.get("id", "")
                 tc_name = item.get("name", "")
                 tc_args_raw = item.get("arguments", "{}")
@@ -396,8 +403,12 @@ def parse_session_files(sessions_dirs):
                     "arguments_raw": tc_args_raw,
                     "arguments_summary": summary,
                     "usage": usage,
+                    "timestamp": timestamp,
                 }
-    return tool_data
+            # 没有 toolCall 的 assistant 消息 = 纯文本回复
+            if not has_tool_call and usage and timestamp:
+                text_reply_usage.append((timestamp, usage))
+    return tool_data, text_reply_usage
 
 
 def summarize_tool_args(tool_name, args_raw):
@@ -523,6 +534,7 @@ class DataStore(object):
         self.sessions_dirs = sessions_dirs
         self._cache = {}  # date -> runs dict
         self._tool_data = None
+        self._text_reply_usage = None
         self._tool_data_loaded = False
         self._lock = threading.Lock()
 
@@ -530,9 +542,14 @@ class DataStore(object):
         if not self._tool_data_loaded:
             with self._lock:
                 if not self._tool_data_loaded:
-                    self._tool_data = parse_session_files(self.sessions_dirs)
+                    self._tool_data, self._text_reply_usage = parse_session_files(self.sessions_dirs)
                     self._tool_data_loaded = True
         return self._tool_data or {}
+
+    def _get_text_reply_usage(self):
+        """获取纯文本回复的 usage 列表"""
+        self._get_tool_data()  # 确保已加载
+        return self._text_reply_usage or []
 
     def get_dates(self):
         """返回可用的日期列表（降序）"""
@@ -682,21 +699,60 @@ class DataStore(object):
         if not run:
             return None
         tool_data = self._get_tool_data()
+        text_reply_usage = self._get_text_reply_usage()
+
         # 推理分段
         infer_segs = compute_infer_segments(run)
+
+        # Run 的时间范围（用于匹配纯文本回复 usage）
+        run_start_str = run["start"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("start") else ""
+        run_end_str = run["end"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("end") else ""
+
+        # token 汇总
+        total_input = 0
+        total_output = 0
+        total_cache_read = 0
+        total_cache_write = 0
+        seen_usage_ids = set()
+
         infer_list = []
         for i, s in enumerate(infer_segs):
-            # 查找这段推理对应的 token（取下一个工具调用的 usage 或最后一段的 usage）
             output_tokens = 0
+            usage_rec = {}
+
             if i < len(run.get("tools", [])):
+                # 这段推理对应的工具调用
                 tc_id = run["tools"][i].get("toolCallId", "")
                 td = tool_data.get(tc_id, {})
-                usage = td.get("usage", {})
-                output_tokens = usage.get("output", 0)
-            elif run.get("tools"):
-                # 最后一段推理，取最后一个工具之后的 — 可能在 assistant 纯文本回复中
-                # 暂时用0
-                pass
+                usage_rec = td.get("usage", {})
+                output_tokens = usage_rec.get("output", 0)
+            elif run.get("end"):
+                # 最后一段推理（生成回复），在纯文本回复 usage 中查找
+                for ts_str, u in text_reply_usage:
+                    if run_start_str and run_end_str:
+                        if ts_str[:19] >= run_start_str and ts_str[:19] <= run_end_str:
+                            if id(u) not in seen_usage_ids:
+                                usage_rec = u
+                                output_tokens = u.get("output", 0)
+                                break
+            elif not run.get("tools") and run.get("end"):
+                # 没有工具的 run，整段都是推理
+                for ts_str, u in text_reply_usage:
+                    if run_start_str and run_end_str:
+                        if ts_str[:19] >= run_start_str and ts_str[:19] <= run_end_str:
+                            if id(u) not in seen_usage_ids:
+                                usage_rec = u
+                                output_tokens = u.get("output", 0)
+                                break
+
+            # 累加到 token 汇总（避免重复计算）
+            if usage_rec and id(usage_rec) not in seen_usage_ids:
+                seen_usage_ids.add(id(usage_rec))
+                total_input += usage_rec.get("input", 0)
+                total_output += usage_rec.get("output", 0)
+                total_cache_read += usage_rec.get("cacheRead", 0)
+                total_cache_write += usage_rec.get("cacheWrite", 0)
+
             dur_s = s["duration_ms"] / 1000.0 if s["duration_ms"] > 0 else 0.001
             tok_per_s = round(output_tokens / dur_s, 1) if output_tokens > 0 else 0
             infer_list.append({
@@ -708,8 +764,6 @@ class DataStore(object):
         # 工具列表
         tools_list = []
         total_tool_ms = 0
-        total_tokens = 0
-        seen_usage_ids = set()
         for t in run.get("tools", []):
             dur = 0
             if t.get("start") and t.get("end"):
@@ -718,10 +772,6 @@ class DataStore(object):
             tc_id = t.get("toolCallId", "")
             td = tool_data.get(tc_id, {})
             usage = td.get("usage", {})
-            uid = id(usage)
-            if uid not in seen_usage_ids and usage:
-                seen_usage_ids.add(uid)
-                total_tokens += usage.get("output", 0)
             start_str = ""
             if t.get("start"):
                 start_str = t["start"].strftime("%H:%M:%S.%f")[:-3]
@@ -770,9 +820,8 @@ class DataStore(object):
                     "duration_ms": dur,
                 })
         # 速率
-        total_output_tok = total_tokens
         dur_s = total_dur / 1000.0 if total_dur > 0 else 1
-        overall_tok_s = round(total_output_tok / dur_s, 1) if total_output_tok > 0 else 0
+        overall_tok_s = round(total_output / dur_s, 1) if total_output > 0 else 0
         return {
             "run_id": run["run_id"],
             "session_id": run.get("session_id", ""),
@@ -785,8 +834,14 @@ class DataStore(object):
             "infer_ms": total_infer_ms,
             "tool_ms": total_tool_ms,
             "tool_count": len(tools_list),
-            "total_tokens_output": total_output_tok,
+            "total_tokens_output": total_output,
             "overall_tok_per_s": overall_tok_s,
+            "token_summary": {
+                "input": total_input,
+                "output": total_output,
+                "cacheRead": total_cache_read,
+                "cacheWrite": total_cache_write,
+            },
             "status": "error" if run.get("is_error") else ("aborted" if run.get("aborted") else "ok"),
             "prompt_info": run.get("prompt_info", {}),
             "infer_segments": infer_list,
