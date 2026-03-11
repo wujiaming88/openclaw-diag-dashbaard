@@ -11,12 +11,7 @@ var autoInterval = 30000;
 var openRuns = {};
 var currentPage = 1;
 var perPage = 20;
-var timelinePage = 1;
-var timelinePerPage = 50;
-var timelineFilters = {
-  webhook: true, message: true, queue: true,
-  session: true, heartbeat: false, error: true
-};
+var currentDate = '';
 
 // ============================================================
 // 工具函数
@@ -131,23 +126,6 @@ function fetchEventsSummary(date) {
 function fetchWebhooks(date) {
   api('/api/events/webhooks?date=' + date, function (data) {
     renderWebhooks(data);
-  });
-}
-
-function fetchErrors(date) {
-  api('/api/events/errors?date=' + date, function (data) {
-    renderErrors(data);
-  });
-}
-
-function fetchTimeline(date, page, pp) {
-  var cats = [];
-  for (var k in timelineFilters) {
-    if (timelineFilters[k]) cats.push(k);
-  }
-  var catParam = cats.length > 0 ? '&category=' + cats.join(',') : '';
-  api('/api/events/timeline?date=' + date + '&page=' + page + '&per_page=' + pp + catParam, function (data) {
-    renderTimeline(data);
   });
 }
 
@@ -363,99 +341,6 @@ function renderWebhooks(data) {
 // ============================================================
 // 渲染 — 错误日志
 // ============================================================
-function renderErrors(data) {
-  var sec = $('#errorSection');
-  var body = $('#errorBody');
-  var badge = $('#errorBadge');
-  if (!data) {
-    sec.style.display = 'none';
-    return;
-  }
-  var errors = data.errors || [];
-  if (errors.length === 0) {
-    sec.style.display = 'none';
-    return;
-  }
-  sec.style.display = 'block';
-  badge.textContent = errors.length + ' errors';
-  badge.className = 'section-badge error';
-
-  // Auto-expand if errors
-  var header = sec.querySelector('.section-header');
-  var bodyEl = sec.querySelector('.section-body');
-  if (!bodyEl.classList.contains('open')) {
-    bodyEl.classList.add('open');
-    if (header) header.classList.add('open');
-  }
-
-  var html = '<table class="detail-table"><thead><tr><th>时间</th><th>类型</th><th>渠道</th><th>详情</th></tr></thead><tbody>';
-  errors.forEach(function (e) {
-    html += '<tr class="error-row">';
-    html += '<td class="mono">' + escHtml(e.time) + '</td>';
-    html += '<td>' + eventTagHtml('error') + ' ' + escHtml(e.type || '') + '</td>';
-    html += '<td>' + escHtml(e.channel || '') + '</td>';
-    html += '<td class="error-text" style="max-width:500px;word-break:break-all">' + escHtml(e.detail || '') + '</td>';
-    html += '</tr>';
-  });
-  html += '</tbody></table>';
-  body.innerHTML = html;
-}
-
-// ============================================================
-// 渲染 — 事件时间线
-// ============================================================
-function renderTimeline(data) {
-  var sec = $('#timelineSection');
-  var badge = $('#timelineBadge');
-  if (!data) {
-    sec.style.display = 'none';
-    return;
-  }
-  sec.style.display = 'block';
-  badge.textContent = data.total + ' events';
-
-  // Render filters
-  var filtersHtml = '';
-  var filterDefs = [
-    { key: 'webhook', label: '🌐 Webhook' },
-    { key: 'message', label: '💬 Message' },
-    { key: 'queue', label: '📋 Queue' },
-    { key: 'session', label: '🔮 Session' },
-    { key: 'error', label: '❌ Error' },
-    { key: 'heartbeat', label: '💓 Heartbeat' },
-  ];
-  filterDefs.forEach(function (f) {
-    var checked = timelineFilters[f.key] ? ' checked' : '';
-    filtersHtml += '<label><input type="checkbox" data-filter="' + f.key + '"' + checked + ' onchange="toggleTimelineFilter(this)"> ' + f.label + '</label>';
-  });
-  $('#timelineFilters').innerHTML = filtersHtml;
-
-  // Render events
-  var events = data.events || [];
-  var html = '<div class="timeline-list"><table class="detail-table"><thead><tr><th>时间</th><th>类型</th><th>事件</th><th>详情</th></tr></thead><tbody>';
-  events.forEach(function (e) {
-    var rowCls = e.category === 'error' ? ' class="error-row"' : '';
-    html += '<tr' + rowCls + '>';
-    html += '<td class="mono">' + escHtml(e.time) + '</td>';
-    html += '<td>' + eventTagHtml(e.category) + '</td>';
-    html += '<td>' + escHtml(e.type) + '</td>';
-    html += '<td style="max-width:500px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(e.detail || '') + '</td>';
-    html += '</tr>';
-  });
-  html += '</tbody></table></div>';
-  $('#timelineContent').innerHTML = html;
-
-  // Pagination
-  var page = data.page || 1;
-  var totalPages = data.total_pages || 1;
-  var total = data.total || 0;
-  var pagHtml = '';
-  pagHtml += '<button onclick="goTimelinePage(' + (page - 1) + ')"' + (page <= 1 ? ' disabled' : '') + '>◀ 上一页</button>';
-  pagHtml += '<span class="page-info">第 ' + page + ' / ' + totalPages + ' 页 (共 ' + total + ' 条)</span>';
-  pagHtml += '<button onclick="goTimelinePage(' + (page + 1) + ')"' + (page >= totalPages ? ' disabled' : '') + '>下一页 ▶</button>';
-  $('#timelinePagination').innerHTML = pagHtml;
-}
-
 // ============================================================
 // 渲染 — Run 列表
 // ============================================================
@@ -643,9 +528,7 @@ function loadData() {
   fetchSummary(d);
   fetchEventsSummary(d);
   fetchWebhooks(d);
-  fetchErrors(d);
   fetchRuns(d, currentPage, perPage);
-  fetchTimeline(d, timelinePage, timelinePerPage);
 }
 
 // ============================================================
@@ -712,18 +595,6 @@ window.changePerPage = function (v) {
   fetchRuns(currentDate, 1, perPage);
 };
 
-window.goTimelinePage = function (p) {
-  timelinePage = p;
-  fetchTimeline(currentDate, timelinePage, timelinePerPage);
-};
-
-window.toggleTimelineFilter = function (el) {
-  var key = el.getAttribute('data-filter');
-  timelineFilters[key] = el.checked;
-  timelinePage = 1;
-  fetchTimeline(currentDate, 1, timelinePerPage);
-};
-
 window.refresh = function () { loadData(); };
 
 window.scrollToRun = function (rid) {
@@ -741,7 +612,6 @@ window.scrollToRun = function (rid) {
 $('#dateSelect').addEventListener('change', function () {
   currentDate = this.value;
   currentPage = 1;
-  timelinePage = 1;
   openRuns = {};
   loadData();
 });
