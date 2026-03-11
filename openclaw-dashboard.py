@@ -1221,7 +1221,7 @@ def main():
         description="OpenClaw 诊断面板 v%s — 零依赖 Web Dashboard" % VERSION
     )
     parser.add_argument("--port", type=int, default=9090, help="监听端口 (默认 9090)")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="绑定地址 (默认 127.0.0.1)")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="绑定地址 (默认 0.0.0.0)")
     parser.add_argument("--log-dir", type=str, default="", help="日志目录")
     parser.add_argument("--sessions-dir", type=str, default="", help="会话文件目录")
     parser.add_argument("--token", type=str, default="", help="访问令牌 (可选)")
