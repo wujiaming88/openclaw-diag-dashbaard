@@ -196,6 +196,29 @@ function renderSystemInfo(info) {
 // ============================================================
 // 渲染 — 摘要卡片 (两行)
 // ============================================================
+// 指标解读提示
+var TIPS = {
+  runs: 'Agent 处理用户消息的总次数。每次用户发送消息触发一次 Run',
+  avgDur: '从收到消息到回复完成的平均端到端耗时。包含推理和工具执行',
+  inferRatio: '推理（等待模型响应）占总耗时的比例。越高说明瓶颈在模型侧，越低说明工具执行耗时多',
+  totalTokens: '模型生成的输出 Token 总数。Token 数量直接影响费用',
+  errors: '处理失败的 Run 数。可能由模型超时、工具报错等引起',
+  webhooks: '收到的 Webhook 请求数（来自 Telegram 等渠道的原始消息）',
+  msgProcessed: '成功处理完成的消息数（含排队、推理、回复全流程）',
+  avgProcessTime: '消息从入队到处理完成的平均耗时。反映整体响应速度',
+  avgQueueWait: '消息在队列中等待的平均时间。过长说明并发处理能力不足',
+  sessionStuck: '会话卡住的次数。表示某个会话长时间未完成，可能需要人工介入',
+  totalEvents: '当天所有诊断事件（webhook、消息、队列、会话等）的总数',
+  tokPerS: '模型输出 Token 的速率（每秒 Token 数）。Opus 通常 20-50 tok/s，Sonnet 通常 50-100 tok/s',
+  cacheHit: '缓存命中率。高命中率说明上下文被有效缓存，可降低延迟和费用',
+  inferSeg: '模型每次推理的耗时。一个 Run 中模型可能多次推理（每次工具调用前后各一次）',
+  outputTokens: '该段推理模型输出的 Token 数。结合耗时可判断模型响应效率',
+};
+
+function tipAttr(key) {
+  return TIPS[key] ? ' title="' + escHtml(TIPS[key]) + '"' : '';
+}
+
 function renderSummary(s) {
   if (!s || s.total_runs === 0) {
     $('#summaryCards').innerHTML = '';
@@ -203,12 +226,12 @@ function renderSummary(s) {
     return;
   }
   var html = '';
-  html += '<div class="card"><div class="label">Run 总数</div><div class="value">' + s.total_runs + '</div></div>';
-  html += '<div class="card"><div class="label">平均耗时</div><div class="value">' + fmtMs(s.avg_duration_ms) + '</div></div>';
-  html += '<div class="card"><div class="label">推理占比</div><div class="value">' + s.infer_ratio + '%</div><div class="ratio-bar"><div class="fill-infer" style="width:' + s.infer_ratio + '%"></div><div class="fill-tool" style="width:' + (100 - s.infer_ratio) + '%"></div></div></div>';
-  html += '<div class="card"><div class="label">总输出 Token</div><div class="value">' + fmtTok(s.total_tokens_output) + '</div></div>';
+  html += '<div class="card"' + tipAttr('runs') + '><div class="label">Run 总数 <span class="tip-icon">?</span></div><div class="value">' + s.total_runs + '</div></div>';
+  html += '<div class="card"' + tipAttr('avgDur') + '><div class="label">平均耗时 <span class="tip-icon">?</span></div><div class="value">' + fmtMs(s.avg_duration_ms) + '</div></div>';
+  html += '<div class="card"' + tipAttr('inferRatio') + '><div class="label">推理占比 <span class="tip-icon">?</span></div><div class="value">' + s.infer_ratio + '%</div><div class="ratio-bar"><div class="fill-infer" style="width:' + s.infer_ratio + '%"></div><div class="fill-tool" style="width:' + (100 - s.infer_ratio) + '%"></div></div></div>';
+  html += '<div class="card"' + tipAttr('totalTokens') + '><div class="label">总输出 Token <span class="tip-icon">?</span></div><div class="value">' + fmtTok(s.total_tokens_output) + '</div></div>';
   var errCls = s.error_count > 0 ? ' error' : '';
-  html += '<div class="card' + errCls + '"><div class="label">错误数</div><div class="value">' + s.error_count + '</div></div>';
+  html += '<div class="card' + errCls + '"' + tipAttr('errors') + '><div class="label">错误数 <span class="tip-icon">?</span></div><div class="value">' + s.error_count + '</div></div>';
   $('#summaryCards').innerHTML = html;
 }
 
@@ -223,13 +246,13 @@ function renderEventsSummary(data) {
   var ss = data.session_stats || {};
 
   var html2 = '';
-  html2 += '<div class="card"><div class="label">Webhook 数</div><div class="value">' + s.webhooks_received + '</div></div>';
-  html2 += '<div class="card"><div class="label">消息处理</div><div class="value">' + s.messages_processed + '</div></div>';
-  html2 += '<div class="card"><div class="label">平均处理时间</div><div class="value">' + fmtMs(ms_stats.avg_process_time_ms || 0) + '</div></div>';
-  html2 += '<div class="card"><div class="label">平均队列等待</div><div class="value">' + fmtMs(ms_stats.avg_queue_wait_ms || 0) + '</div></div>';
+  html2 += '<div class="card"' + tipAttr('webhooks') + '><div class="label">Webhook 数 <span class="tip-icon">?</span></div><div class="value">' + s.webhooks_received + '</div></div>';
+  html2 += '<div class="card"' + tipAttr('msgProcessed') + '><div class="label">消息处理 <span class="tip-icon">?</span></div><div class="value">' + s.messages_processed + '</div></div>';
+  html2 += '<div class="card"' + tipAttr('avgProcessTime') + '><div class="label">平均处理时间 <span class="tip-icon">?</span></div><div class="value">' + fmtMs(ms_stats.avg_process_time_ms || 0) + '</div></div>';
+  html2 += '<div class="card"' + tipAttr('avgQueueWait') + '><div class="label">平均队列等待 <span class="tip-icon">?</span></div><div class="value">' + fmtMs(ms_stats.avg_queue_wait_ms || 0) + '</div></div>';
   var stuckCls = ss.stuck_count > 0 ? ' warn' : '';
-  html2 += '<div class="card' + stuckCls + '"><div class="label">会话卡住</div><div class="value">' + (ss.stuck_count || 0) + '</div></div>';
-  html2 += '<div class="card"><div class="label">总事件数</div><div class="value">' + s.total_events + '</div></div>';
+  html2 += '<div class="card' + stuckCls + '"' + tipAttr('sessionStuck') + '><div class="label">会话卡住 <span class="tip-icon">?</span></div><div class="value">' + (ss.stuck_count || 0) + '</div></div>';
+  html2 += '<div class="card"' + tipAttr('totalEvents') + '><div class="label">总事件数 <span class="tip-icon">?</span></div><div class="value">' + s.total_events + '</div></div>';
   $('#summaryCards2').innerHTML = html2;
 }
 
@@ -418,7 +441,7 @@ function renderRunDetail(d, el) {
   html += '<div style="margin-bottom:12px;font-size:13px;color:var(--text2)">';
   html += '开始: <strong style="color:var(--text)">' + escHtml(d.start) + '</strong>';
   html += ' &nbsp;结束: <strong style="color:var(--text)">' + escHtml(d.end || '-') + '</strong>';
-  html += ' &nbsp;输出速率: <strong style="color:var(--text)">' + (d.overall_tok_per_s || 0) + ' tok/s</strong>';
+  html += ' &nbsp;输出速率: <strong style="color:var(--text)" title="' + escHtml(TIPS.tokPerS) + '">' + (d.overall_tok_per_s || 0) + ' tok/s <span class="tip-icon">?</span></strong>';
   html += '</div>';
 
   // 甘特图
@@ -441,7 +464,7 @@ function renderRunDetail(d, el) {
   // 推理分段
   html += '<div class="detail-section"><h4>推理分段</h4>';
   if (d.infer_segments && d.infer_segments.length > 0) {
-    html += '<table class="detail-table"><thead><tr><th>阶段</th><th>耗时</th><th>输出 Token</th><th>速率</th></tr></thead><tbody>';
+    html += '<table class="detail-table"><thead><tr><th title="' + escHtml(TIPS.inferSeg) + '">阶段 <span class="tip-icon">?</span></th><th>耗时</th><th title="' + escHtml(TIPS.outputTokens) + '">输出 Token <span class="tip-icon">?</span></th><th title="' + escHtml(TIPS.tokPerS) + '">速率 <span class="tip-icon">?</span></th></tr></thead><tbody>';
     d.infer_segments.forEach(function (s) {
       var dc = speedClass(s.duration_ms);
       html += '<tr><td>' + escHtml(s.label) + '</td><td class="' + dc + '">' + fmtMs(s.duration_ms) + '</td><td>' + s.output_tokens + '</td><td>' + (s.tok_per_s > 0 ? s.tok_per_s + ' tok/s' : '-') + '</td></tr>';

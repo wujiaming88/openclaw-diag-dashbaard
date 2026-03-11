@@ -152,6 +152,10 @@ tr.clickable:hover td{background:var(--hover)}
 .tool-args-wrap pre{margin:0;white-space:pre-wrap;word-break:break-all;font-family:inherit;font-size:inherit;background:var(--bg);padding:6px 8px;border-radius:4px;border:1px solid var(--border)}
 .tool-args-wrap.collapsed pre{max-height:6em;overflow:hidden}
 .tool-args-toggle{display:inline-block;color:var(--accent);cursor:pointer;font-size:10px;margin-top:4px;user-select:none;padding:2px 8px;background:var(--card);border-radius:3px;border:1px solid var(--border)}
+.tip-icon{display:inline-block;width:14px;height:14px;line-height:14px;text-align:center;font-size:10px;font-weight:bold;color:var(--text2);background:var(--bg);border:1px solid var(--border);border-radius:50%;cursor:help;vertical-align:middle;margin-left:2px;opacity:0.6}
+.tip-icon:hover{opacity:1;color:var(--accent);border-color:var(--accent)}
+.card[title]{cursor:help}
+.card[title]:hover .tip-icon{opacity:1;color:var(--accent);border-color:var(--accent)}
 
 /* 汇总条 */
 .summary-bar{display:flex;gap:20px;flex-wrap:wrap;padding:12px 16px;background:var(--card);border-radius:8px;border:1px solid var(--border);margin-top:12px;font-size:13px}
