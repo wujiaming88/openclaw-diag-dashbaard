@@ -224,18 +224,31 @@ function tipIcon(key) {
 function renderSummary(s) {
   if (!s || s.total_runs === 0) {
     $('#summaryCards').innerHTML = '';
+    $('#summaryCards2').innerHTML = '';
     return;
   }
+  // 第一行：核心性能指标
   var html = '';
   html += '<div class="card"><div class="label">Run 总数' + tipIcon('runs') + '</div><div class="value">' + s.total_runs + '</div></div>';
   html += '<div class="card"><div class="label">平均耗时' + tipIcon('avgDur') + '</div><div class="value">' + fmtMs(s.avg_duration_ms) + '</div></div>';
   html += '<div class="card"><div class="label">推理占比' + tipIcon('inferRatio') + '</div><div class="value">' + s.infer_ratio + '%</div><div class="ratio-bar"><div class="fill-infer" style="width:' + s.infer_ratio + '%"></div><div class="fill-tool" style="width:' + (100 - s.infer_ratio) + '%"></div></div></div>';
-  html += '<div class="card"><div class="label">总输出 Token' + tipIcon('totalTokens') + '</div><div class="value">' + fmtTok(s.total_tokens_output) + '</div></div>';
+  html += '<div class="card"><div class="label">平均速率' + tipIcon('tokPerS') + '</div><div class="value">' + (s.avg_tok_per_s || 0) + ' tok/s</div></div>';
   var errCls = s.error_count > 0 ? ' error' : '';
   html += '<div class="card' + errCls + '"><div class="label">错误数' + tipIcon('errors') + '</div><div class="value">' + s.error_count + '</div></div>';
   $('#summaryCards').innerHTML = html;
+
+  // 第二行：Token 消耗指标
+  var html2 = '';
+  html2 += '<div class="card"><div class="label">输出 Token' + tipIcon('tokenOutput') + '</div><div class="value">' + fmtTok(s.total_tokens_output) + '</div></div>';
+  html2 += '<div class="card"><div class="label">输入 Token' + tipIcon('tokenInput') + '</div><div class="value">' + fmtTok(s.total_tokens_input || 0) + '</div></div>';
+  html2 += '<div class="card"><div class="label">缓存读取' + tipIcon('tokenCacheRead') + '</div><div class="value">' + fmtTok(s.total_cache_read || 0) + '</div></div>';
+  html2 += '<div class="card"><div class="label">缓存写入' + tipIcon('tokenCacheWrite') + '</div><div class="value">' + fmtTok(s.total_cache_write || 0) + '</div></div>';
+  var hitCls = (s.cache_hit_ratio || 0) > 80 ? '' : ' warn';
+  html2 += '<div class="card' + hitCls + '"><div class="label">缓存命中率' + tipIcon('cacheHit') + '</div><div class="value">' + (s.cache_hit_ratio || 0) + '%</div></div>';
+  $('#summaryCards2').innerHTML = html2;
 }
 
+// 也在 showEmpty 中清除
 // 渲染 — Run 列表
 // ============================================================
 function renderRunList(data) {
@@ -411,6 +424,7 @@ function renderRunDetail(d, el) {
 // ============================================================
 function showEmpty() {
   $('#summaryCards').innerHTML = '';
+  $('#summaryCards2').innerHTML = '';
   $('#content').innerHTML = '<div class="empty"><div class="icon">📭</div><p>暂无诊断数据</p><p style="margin-top:8px;font-size:13px">等待 OpenClaw 生成日志后自动显示</p></div>';
 }
 

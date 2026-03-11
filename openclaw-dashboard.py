@@ -1277,9 +1277,54 @@ class DataStore(object):
                 td = tool_data.get(tc_id, {})
                 usage = td.get("usage", {})
                 total_tokens += usage.get("output", 0)
+        # 也收集 text_reply_usage
+        text_reply_usage = self._get_text_reply_usage()
+        total_input = 0
+        total_cache_read = 0
+        total_cache_write = 0
+        tok_per_s_list = []
+        for run in runs.values():
+            run_start_str = run["start"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("start") else ""
+            run_end_str = run["end"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("end") else ""
+            # 从 text_reply 收集 token
+            if run.get("start") and run.get("end"):
+                for ts_str, u in text_reply_usage:
+                    ts_cmp = ts_str[:19]
+                    if ts_cmp >= run_start_str and ts_cmp <= run_end_str:
+                        total_tokens += u.get("output", 0)
+                        total_input += u.get("input", 0)
+                        total_cache_read += u.get("cacheRead", 0)
+                        total_cache_write += u.get("cacheWrite", 0)
+                        break
+            # 从 tool_data 收集 cache
+            seen = set()
+            for t in run.get("tools", []):
+                tc_id = t.get("toolCallId", "")
+                td = tool_data.get(tc_id, {})
+                usage = td.get("usage", {})
+                uid = id(usage)
+                if uid not in seen and usage:
+                    seen.add(uid)
+                    total_input += usage.get("input", 0)
+                    total_cache_read += usage.get("cacheRead", 0)
+                    total_cache_write += usage.get("cacheWrite", 0)
+            # 计算 tok/s
+            dur = run.get("duration_ms", 0)
+            segs = compute_infer_segments(run)
+            seg_tokens = 0
+            seg_time = 0
+            for s in segs:
+                seg_time += s["duration_ms"]
+            if seg_time > 0 and dur > 0:
+                # 粗算
+                pass
+
         avg_dur = int(sum(durations) / len(durations)) if durations else 0
         total_time = total_infer + total_tool
         infer_ratio = round(total_infer / total_time * 100, 1) if total_time > 0 else 0
+        avg_tok_per_s = round(total_tokens / (total_infer / 1000.0), 1) if total_infer > 0 else 0
+        total_cache = total_cache_read + total_cache_write + total_input
+        cache_hit_ratio = round(total_cache_read / total_cache * 100, 1) if total_cache > 0 else 0
         return {
             "date": date,
             "total_runs": len(runs),
@@ -1288,6 +1333,11 @@ class DataStore(object):
             "total_tool_ms": total_tool,
             "infer_ratio": infer_ratio,
             "total_tokens_output": total_tokens,
+            "total_tokens_input": total_input,
+            "total_cache_read": total_cache_read,
+            "total_cache_write": total_cache_write,
+            "cache_hit_ratio": cache_hit_ratio,
+            "avg_tok_per_s": avg_tok_per_s,
             "error_count": error_count,
             "models": sorted(models),
             "channels": sorted(channels),
