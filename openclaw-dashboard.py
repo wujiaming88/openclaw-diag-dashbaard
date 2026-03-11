@@ -1904,6 +1904,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 result = self.data_store.get_events_errors(date)
                 self._send_json(result)
+            elif path == "/api/debug/sessions":
+                # 诊断端点：检查 session 文件解析情况
+                td = self.data_store._get_tool_data()
+                tru = self.data_store._get_text_reply_usage()
+                has_usage = sum(1 for v in td.values() if v.get("usage", {}).get("output", 0) > 0)
+                sample_keys = list(td.keys())[:3]
+                samples = []
+                for k in sample_keys:
+                    v = td[k]
+                    samples.append({
+                        "toolCallId": k,
+                        "tool": v.get("tool", ""),
+                        "usage": v.get("usage", {}),
+                    })
+                tru_has = sum(1 for _, u in tru if u.get("output", 0) > 0)
+                self._send_json({
+                    "sessions_dirs": self.data_store.sessions_dirs,
+                    "tool_data_count": len(td),
+                    "tool_data_with_output": has_usage,
+                    "text_reply_count": len(tru),
+                    "text_reply_with_output": tru_has,
+                    "samples": samples,
+                })
             else:
                 self._send_json({"error": "not found"}, 404)
         except Exception as e:
