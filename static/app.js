@@ -274,7 +274,6 @@ function renderEventsSummary(data) {
   var hasData = (s.messages_processed || 0) > 0 || (s.total_events || 0) > 0 || (ss.stuck_count || 0) > 0;
   if (!hasData) { el.innerHTML = ''; return; }
   var html = '';
-  html += '<div class="card"><div class="label">Webhook' + tipIcon('webhooks') + '</div><div class="value">' + (s.webhooks_received || 0) + '</div></div>';
   html += '<div class="card"><div class="label">消息处理' + tipIcon('msgProcessed') + '</div><div class="value">' + (s.messages_processed || 0) + '</div></div>';
   html += '<div class="card"><div class="label">平均处理时间' + tipIcon('avgProcessTime') + '</div><div class="value">' + fmtMs(ms_stats.avg_process_time_ms || 0) + '</div></div>';
   html += '<div class="card"><div class="label">平均队列等待' + tipIcon('avgQueueWait') + '</div><div class="value">' + fmtMs(ms_stats.avg_queue_wait_ms || 0) + '</div></div>';
@@ -297,7 +296,6 @@ function renderPipeline(data) {
   sec.style.display = 'block';
 
   var stages = [
-    { icon: '📡', name: 'Webhook\nReceived', count: s.webhooks_received || 0 },
     { icon: '📥', name: 'Message\nQueued', count: s.messages_queued || 0 },
     { icon: '📋', name: 'Queue\nEnqueue', count: s.queue_enqueues || 0 },
     { icon: '📤', name: 'Queue\nDequeue', count: s.queue_dequeues || 0, detail: 'avg wait: ' + fmtMs(ms_stats.avg_queue_wait_ms || 0) },
@@ -315,14 +313,6 @@ function renderPipeline(data) {
     if (st.detail) html += '<div class="stage-detail">' + escHtml(st.detail) + '</div>';
     html += '</div>';
   });
-  if (s.webhook_errors > 0) {
-    html += '<div class="pipeline-arrow" style="color:#ff4444">⚠</div>';
-    html += '<div class="pipeline-stage" style="border-color:#ff4444">';
-    html += '<div class="stage-icon">❌</div>';
-    html += '<div class="stage-count" style="color:#ff4444">' + s.webhook_errors + '</div>';
-    html += '<div class="stage-name">Errors</div>';
-    html += '</div>';
-  }
   html += '</div>';
 
   // Token 用量摘要
