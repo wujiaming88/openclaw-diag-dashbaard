@@ -21,6 +21,53 @@ A web-based performance diagnostic tool for the [OpenClaw](https://github.com/ni
 - **Python 3.6+** — No walrus operators, no match/case, no bleeding-edge syntax
 - **Graceful Error Handling** — Survives missing directories, corrupt JSON, huge log files, and port conflicts
 
+## Prerequisites: Enable OpenClaw Diagnostics
+
+The dashboard reads diagnostic log events that are **not emitted by default**. You must enable diagnostics in your OpenClaw configuration before the dashboard can display any data.
+
+Edit `~/.openclaw/openclaw.json` and add:
+
+```json
+{
+  "diagnostics": {
+    "enabled": true
+  },
+  "logging": {
+    "level": "debug"
+  }
+}
+```
+
+Then restart the Gateway:
+
+```bash
+openclaw gateway restart
+```
+
+**Why is this needed?**
+- `diagnostics.enabled: true` — Enables diagnostic events (`model.usage`, `message.processed`, `session.state`, etc.)
+- `logging.level: "debug"` — Ensures run lifecycle events (`embedded run start/end`, `tool start/end`) are written to the log file. At the default `info` level, these events are not recorded.
+
+**Optional: Targeted channel logs**
+
+To also capture channel-specific HTTP details (e.g., Telegram or Feishu API calls), add diagnostic flags:
+
+```json
+{
+  "diagnostics": {
+    "enabled": true,
+    "flags": ["telegram.http", "feishu.http"]
+  },
+  "logging": {
+    "level": "debug"
+  }
+}
+```
+
+Available flags: `telegram.http`, `telegram.*`, `feishu.http`, `feishu.*`, `gateway.*`, `*` (all).
+
+> **Note:** After enabling diagnostics and restarting the Gateway, send a few messages to generate log data. The dashboard will show "No data" until diagnostic events are recorded.
+
 ## Quick Start
 
 ```bash

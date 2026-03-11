@@ -21,6 +21,53 @@
 - **Python 3.6+** — 无 walrus 操作符，无 match/case，兼容旧版 Python
 - **优雅容错** — 目录不存在、JSON 损坏、日志文件过大、端口冲突等均可正常处理
 
+## 前置条件：开启 OpenClaw 诊断
+
+Dashboard 读取的诊断日志事件**默认不会生成**。使用前必须在 OpenClaw 配置中开启诊断功能。
+
+编辑 `~/.openclaw/openclaw.json`，添加：
+
+```json
+{
+  "diagnostics": {
+    "enabled": true
+  },
+  "logging": {
+    "level": "debug"
+  }
+}
+```
+
+然后重启 Gateway：
+
+```bash
+openclaw gateway restart
+```
+
+**为什么需要这些配置？**
+- `diagnostics.enabled: true` — 启用诊断事件（`model.usage`、`message.processed`、`session.state` 等）
+- `logging.level: "debug"` — 确保 Run 生命周期事件（`embedded run start/end`、`tool start/end`）写入日志文件。默认的 `info` 级别不会记录这些事件。
+
+**可选：通道定向日志**
+
+如需捕获特定通道的 HTTP 请求详情（如 Telegram 或飞书 API 调用），可添加诊断 flag：
+
+```json
+{
+  "diagnostics": {
+    "enabled": true,
+    "flags": ["telegram.http", "feishu.http"]
+  },
+  "logging": {
+    "level": "debug"
+  }
+}
+```
+
+可用 flag：`telegram.http`、`telegram.*`、`feishu.http`、`feishu.*`、`gateway.*`、`*`（全部）。
+
+> **注意：** 开启诊断并重启 Gateway 后，需要发送几条消息来生成日志数据。在有诊断事件写入之前，Dashboard 会显示"暂无数据"。
+
 ## 快速开始
 
 ```bash
