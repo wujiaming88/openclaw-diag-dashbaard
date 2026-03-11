@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OpenClaw 诊断面板</title>
-<link rel="stylesheet" href="/static/style.css?v=8">
+<link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body>
 <div class="container">
@@ -32,10 +32,19 @@
   <div id="summaryCards2" class="cards"></div>
   <div id="summaryCards3" class="cards"></div>
 
+  <!-- 消息处理流水线 -->
+  <div id="pipelineSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleSection(this)">
+      <h2>📡 消息处理流水线</h2>
+      <span class="toggle-icon">▼</span>
+    </div>
+    <div class="section-body open" id="pipelineBody"></div>
+  </div>
+
   <!-- Run 列表 -->
   <div id="content"></div>
 
 </div>
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=9"></script>
 </body>
 </html>

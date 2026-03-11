@@ -119,6 +119,7 @@ function fetchSummary(date) {
 function fetchEventsSummary(date) {
   api('/api/events?date=' + date, function (data) {
     renderEventsSummary(data);
+    renderPipeline(data);
   });
 }
 
@@ -269,9 +270,9 @@ function renderEventsSummary(data) {
   var s = data.summary;
   var ms_stats = data.message_stats || {};
   var ss = data.session_stats || {};
-  // 只在有数据时显示
-  var total = (s.webhooks_received || 0) + (s.messages_processed || 0) + (s.total_events || 0);
-  if (total === 0) { el.innerHTML = ''; return; }
+  // 只在有任何数据时显示（不仅看 webhook）
+  var hasData = (s.messages_processed || 0) > 0 || (s.total_events || 0) > 0 || (ss.stuck_count || 0) > 0;
+  if (!hasData) { el.innerHTML = ''; return; }
   var html = '';
   html += '<div class="card"><div class="label">Webhook' + tipIcon('webhooks') + '</div><div class="value">' + (s.webhooks_received || 0) + '</div></div>';
   html += '<div class="card"><div class="label">消息处理' + tipIcon('msgProcessed') + '</div><div class="value">' + (s.messages_processed || 0) + '</div></div>';
@@ -280,6 +281,66 @@ function renderEventsSummary(data) {
   var stuckCls = (ss.stuck_count || 0) > 0 ? ' warn' : '';
   html += '<div class="card' + stuckCls + '"><div class="label">会话卡住' + tipIcon('sessionStuck') + '</div><div class="value">' + (ss.stuck_count || 0) + '</div></div>';
   el.innerHTML = html;
+}
+
+function renderPipeline(data) {
+  var sec = $('#pipelineSection');
+  var body = $('#pipelineBody');
+  if (!sec || !body) return;
+  if (!data || !data.summary) { sec.style.display = 'none'; return; }
+  var s = data.summary;
+  var ms_stats = data.message_stats || {};
+  // 只要有消息处理数据就显示
+  if ((s.messages_queued || 0) === 0 && (s.messages_processed || 0) === 0) {
+    sec.style.display = 'none'; return;
+  }
+  sec.style.display = 'block';
+
+  var stages = [
+    { icon: '📡', name: 'Webhook\nReceived', count: s.webhooks_received || 0 },
+    { icon: '📥', name: 'Message\nQueued', count: s.messages_queued || 0 },
+    { icon: '📋', name: 'Queue\nEnqueue', count: s.queue_enqueues || 0 },
+    { icon: '📤', name: 'Queue\nDequeue', count: s.queue_dequeues || 0, detail: 'avg wait: ' + fmtMs(ms_stats.avg_queue_wait_ms || 0) },
+    { icon: '⚡', name: 'Run\nExecution', count: s.runs || 0 },
+    { icon: '✅', name: 'Message\nProcessed', count: s.messages_processed || 0, detail: 'avg: ' + fmtMs(ms_stats.avg_process_time_ms || 0) },
+  ];
+
+  var html = '<div class="pipeline">';
+  stages.forEach(function (st, i) {
+    if (i > 0) html += '<div class="pipeline-arrow">→</div>';
+    html += '<div class="pipeline-stage">';
+    html += '<div class="stage-icon">' + st.icon + '</div>';
+    html += '<div class="stage-count">' + st.count + '</div>';
+    html += '<div class="stage-name">' + escHtml(st.name) + '</div>';
+    if (st.detail) html += '<div class="stage-detail">' + escHtml(st.detail) + '</div>';
+    html += '</div>';
+  });
+  if (s.webhook_errors > 0) {
+    html += '<div class="pipeline-arrow" style="color:#ff4444">⚠</div>';
+    html += '<div class="pipeline-stage" style="border-color:#ff4444">';
+    html += '<div class="stage-icon">❌</div>';
+    html += '<div class="stage-count" style="color:#ff4444">' + s.webhook_errors + '</div>';
+    html += '<div class="stage-name">Errors</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Token 用量摘要
+  var mu = data.model_usage || {};
+  if ((mu.total_output_tokens || 0) > 0) {
+    html += '<div style="margin-top:12px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:13px;color:var(--text2)">';
+    html += '📊 <strong style="color:var(--text)">Token 用量:</strong> ';
+    html += 'Input: <strong>' + fmtTok(mu.total_input_tokens) + '</strong> ';
+    html += 'Output: <strong>' + fmtTok(mu.total_output_tokens) + '</strong> ';
+    html += 'Cache Read: <strong>' + fmtTok(mu.total_cache_read) + '</strong> ';
+    html += 'Cache Write: <strong>' + fmtTok(mu.total_cache_write) + '</strong>';
+    if (mu.total_cache_read > 0 && mu.total_input_tokens > 0) {
+      var hitRate = Math.round(mu.total_cache_read / (mu.total_cache_read + mu.total_input_tokens) * 100);
+      html += ' | 缓存命中率: <strong style="color:var(--green,#4caf50)">' + hitRate + '%</strong>';
+    }
+    html += '</div>';
+  }
+  body.innerHTML = html;
 }
 
 // 渲染 — Run 列表
