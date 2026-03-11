@@ -101,6 +101,84 @@ def detect_sessions_dirs(cli_arg):
 # 日志解析
 # ============================================================
 
+def check_openclaw_config():
+    """检测 OpenClaw 配置是否开启了诊断和 debug 日志级别
+    返回: (config_ok, warnings_list)
+    """
+    warnings = []
+    config_ok = False
+
+    # 查找配置文件
+    config_paths = []
+    state_dir = os.environ.get("OPENCLAW_STATE_DIR", "")
+    config_env = os.environ.get("OPENCLAW_CONFIG_PATH", "")
+
+    if config_env:
+        config_paths.append(config_env)
+    if state_dir:
+        config_paths.append(os.path.join(state_dir, "openclaw.json"))
+    config_paths.append(os.path.expanduser("~/.openclaw/openclaw.json"))
+
+    config_path = None
+    config_data = None
+    for cp in config_paths:
+        cp = os.path.expanduser(cp)
+        if os.path.isfile(cp):
+            config_path = cp
+            break
+
+    if not config_path:
+        warnings.append("[警告] 未找到 OpenClaw 配置文件, 无法校验诊断是否开启")
+        warnings.append("       搜索路径: %s" % ", ".join(config_paths))
+        return False, warnings
+
+    # 读取并解析配置
+    try:
+        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
+            config_data = json.load(f)
+    except (IOError, OSError, ValueError) as e:
+        warnings.append("[警告] 配置文件读取失败 (%s): %s" % (config_path, e))
+        return False, warnings
+
+    # 检查 diagnostics.enabled
+    diag = config_data.get("diagnostics", {})
+    if not isinstance(diag, dict):
+        diag = {}
+    diag_enabled = diag.get("enabled", False)
+
+    # 检查 logging.level
+    logging_cfg = config_data.get("logging", {})
+    if not isinstance(logging_cfg, dict):
+        logging_cfg = {}
+    log_level = logging_cfg.get("level", "info")
+
+    # 判断结果
+    issues = []
+    if not diag_enabled:
+        issues.append('diagnostics.enabled 未设置为 true')
+    if log_level not in ("debug", "trace"):
+        issues.append('logging.level 为 "%s" (需要 "debug" 或 "trace")' % log_level)
+
+    if issues:
+        warnings.append("[警告] OpenClaw 配置不完整, Dashboard 可能无法获取数据!")
+        warnings.append("       配置文件: %s" % config_path)
+        for issue in issues:
+            warnings.append("       - %s" % issue)
+        warnings.append("")
+        warnings.append("       请在配置文件中添加以下内容并重启 Gateway:")
+        warnings.append('       {')
+        warnings.append('         "diagnostics": { "enabled": true },')
+        warnings.append('         "logging": { "level": "debug" }')
+        warnings.append('       }')
+        warnings.append("")
+        warnings.append("       然后执行: openclaw gateway restart")
+        config_ok = False
+    else:
+        config_ok = True
+
+    return config_ok, warnings
+
+
 def safe_read_lines(filepath, max_lines=MAX_LOG_LINES):
     """安全读取文件行，大文件只取最后 max_lines 行"""
     try:
@@ -1224,12 +1302,21 @@ def main():
     log_dir = detect_log_dir(args.log_dir)
     sessions_dirs = detect_sessions_dirs(args.sessions_dir)
 
+    # 检测 OpenClaw 配置是否开启了诊断
+    config_ok, config_warnings = check_openclaw_config()
+
     # 打印启动信息
     print("=" * 50)
     print("OpenClaw 诊断面板 v%s" % VERSION)
     print("=" * 50)
     print("Python: %s" % platform.python_version())
     print("平台: %s" % platform.platform())
+
+    # 打印配置检测结果
+    if config_ok:
+        print("OpenClaw 配置: 诊断已开启")
+    for w in config_warnings:
+        print(w)
 
     if os.path.isdir(log_dir):
         log_files = glob.glob(os.path.join(log_dir, "openclaw-*.log"))
