@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OpenClaw 诊断面板 v1.2
+OpenClaw 诊断面板 v2.0
 Python 后端 API 服务 + 静态文件服务
 前端文件位于 static/ 目录
 
@@ -38,7 +38,7 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "1.2.0"
+VERSION = "2.0.0"
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 
 # ============================================================
@@ -340,6 +340,319 @@ def parse_log_events(filepath):
                     "sessionKey": extract_kv(msg, "sessionKey"),
                 }
     return runs
+
+
+def parse_all_events(filepath):
+    """解析所有诊断事件，返回分类事件字典"""
+    events = {
+        "webhooks": [],       # webhook received (telegram update) / channel events
+        "messages": [],       # message queued/processed
+        "queue": [],          # lane enqueue/dequeue/task done
+        "sessions": [],       # session state/stuck
+        "heartbeats": [],     # diagnostic heartbeat
+        "errors": [],         # all error events
+        "all_timeline": [],   # all events for timeline
+    }
+    lines = safe_read_lines(filepath)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        msg = obj.get("1", "")
+        if not isinstance(msg, str):
+            msg = str(msg) if msg else ""
+        ts_str = obj.get("time", "")
+        ts = parse_time(ts_str)
+        sub_str = obj.get("0", "")
+        data = obj.get("2", {})
+
+        # Parse subsystem
+        subsystem = ""
+        if isinstance(sub_str, str) and sub_str.startswith("{"):
+            try:
+                sub_obj = json.loads(sub_str)
+                subsystem = sub_obj.get("subsystem", "")
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        ts_display = ""
+        if ts:
+            ts_display = ts.strftime("%H:%M:%S.%f")[:-3]
+
+        # === Webhook / Telegram raw updates ===
+        if subsystem == "gateway/channels/telegram/raw-update":
+            evt = {
+                "time": ts_display,
+                "time_full": ts_str,
+                "type": "webhook.received",
+                "channel": "telegram",
+                "detail": msg[:200] if msg else "",
+            }
+            events["webhooks"].append(evt)
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "webhook", "type": "webhook.received",
+                "detail": "Telegram webhook received",
+            })
+            continue
+
+        # === Telegram channel events (sendMessage ok/failed) ===
+        if subsystem == "gateway/channels/telegram":
+            if "sendMessage failed" in msg or "reply failed" in msg:
+                err_evt = {
+                    "time": ts_display, "time_full": ts_str,
+                    "type": "webhook.error", "channel": "telegram",
+                    "detail": msg,
+                }
+                events["errors"].append(err_evt)
+                events["webhooks"].append({
+                    "time": ts_display, "time_full": ts_str,
+                    "type": "webhook.error", "channel": "telegram",
+                    "detail": msg,
+                })
+                events["all_timeline"].append({
+                    "time": ts_display, "time_full": ts_str,
+                    "category": "error", "type": "webhook.error",
+                    "detail": msg[:200],
+                })
+            continue
+
+        # === Diagnostic subsystem events ===
+        if subsystem != "diagnostic":
+            continue
+
+        # --- message queued ---
+        if msg.startswith("message queued:"):
+            session_id = extract_kv(msg, "sessionId")
+            session_key = extract_kv(msg, "sessionKey")
+            queue_depth = extract_kv(msg, "queueDepth")
+            session_state = extract_kv(msg, "sessionState")
+            evt = {
+                "time": ts_display, "time_full": ts_str,
+                "type": "message.queued",
+                "session_id": session_id,
+                "session_key": session_key,
+                "queue_depth": int(queue_depth) if queue_depth.isdigit() else 0,
+                "session_state": session_state,
+            }
+            events["messages"].append(evt)
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "message", "type": "message.queued",
+                "detail": "session=%s depth=%s" % (session_key, queue_depth),
+            })
+
+        # --- message processed ---
+        elif msg.startswith("message processed:"):
+            channel = extract_kv(msg, "channel")
+            chat_id = extract_kv(msg, "chatId")
+            message_id = extract_kv(msg, "messageId")
+            session_key = extract_kv(msg, "sessionKey")
+            outcome = extract_kv(msg, "outcome")
+            duration_str = extract_kv(msg, "duration")
+            duration_ms = 0
+            if duration_str:
+                m = re.match(r"(\d+)", duration_str)
+                if m:
+                    duration_ms = int(m.group(1))
+            evt = {
+                "time": ts_display, "time_full": ts_str,
+                "type": "message.processed",
+                "channel": channel,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "session_key": session_key,
+                "outcome": outcome,
+                "duration_ms": duration_ms,
+            }
+            events["messages"].append(evt)
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "message", "type": "message.processed",
+                "detail": "ch=%s outcome=%s dur=%dms" % (channel, outcome, duration_ms),
+            })
+            if outcome and outcome != "completed":
+                events["errors"].append({
+                    "time": ts_display, "time_full": ts_str,
+                    "type": "message.error",
+                    "channel": channel,
+                    "detail": "outcome=%s session=%s messageId=%s" % (outcome, session_key, message_id),
+                })
+
+        # --- session state ---
+        elif msg.startswith("session state:"):
+            session_id = extract_kv(msg, "sessionId")
+            session_key = extract_kv(msg, "sessionKey")
+            prev_state = extract_kv(msg, "prev")
+            new_state = extract_kv(msg, "new")
+            reason_m = re.search(r'reason="([^"]*)"', msg)
+            reason = reason_m.group(1) if reason_m else extract_kv(msg, "reason")
+            queue_depth = extract_kv(msg, "queueDepth")
+            evt = {
+                "time": ts_display, "time_full": ts_str,
+                "type": "session.state",
+                "session_id": session_id,
+                "session_key": session_key,
+                "prev": prev_state,
+                "new": new_state,
+                "reason": reason,
+                "queue_depth": int(queue_depth) if queue_depth.isdigit() else 0,
+            }
+            events["sessions"].append(evt)
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "session", "type": "session.state",
+                "detail": "%s→%s reason=%s" % (prev_state, new_state, reason),
+            })
+
+        # --- stuck session ---
+        elif msg.startswith("stuck session:"):
+            session_id = extract_kv(msg, "sessionId")
+            session_key = extract_kv(msg, "sessionKey")
+            state = extract_kv(msg, "state")
+            age_str = extract_kv(msg, "age")
+            age_s = 0
+            if age_str:
+                m = re.match(r"(\d+)", age_str)
+                if m:
+                    age_s = int(m.group(1))
+            queue_depth = extract_kv(msg, "queueDepth")
+            evt = {
+                "time": ts_display, "time_full": ts_str,
+                "type": "session.stuck",
+                "session_id": session_id,
+                "session_key": session_key,
+                "state": state,
+                "age_s": age_s,
+                "queue_depth": int(queue_depth) if queue_depth.isdigit() else 0,
+            }
+            events["sessions"].append(evt)
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "session", "type": "session.stuck",
+                "detail": "session=%s age=%ds state=%s" % (session_key, age_s, state),
+            })
+
+        # --- lane enqueue ---
+        elif msg.startswith("lane enqueue:"):
+            lane = extract_kv(msg, "lane")
+            queue_size = extract_kv(msg, "queueSize")
+            evt = {
+                "time": ts_display, "time_full": ts_str,
+                "type": "queue.lane.enqueue",
+                "lane": lane,
+                "queue_size": int(queue_size) if queue_size.isdigit() else 0,
+            }
+            events["queue"].append(evt)
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "queue", "type": "queue.enqueue",
+                "detail": "lane=%s size=%s" % (lane, queue_size),
+            })
+
+        # --- lane dequeue ---
+        elif msg.startswith("lane dequeue:"):
+            lane = extract_kv(msg, "lane")
+            wait_ms = extract_kv(msg, "waitMs")
+            queue_size = extract_kv(msg, "queueSize")
+            evt = {
+                "time": ts_display, "time_full": ts_str,
+                "type": "queue.lane.dequeue",
+                "lane": lane,
+                "wait_ms": int(wait_ms) if wait_ms.isdigit() else 0,
+                "queue_size": int(queue_size) if queue_size.isdigit() else 0,
+            }
+            events["queue"].append(evt)
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "queue", "type": "queue.dequeue",
+                "detail": "lane=%s waitMs=%s" % (lane, wait_ms),
+            })
+
+        # --- lane task done ---
+        elif msg.startswith("lane task done:"):
+            lane = extract_kv(msg, "lane")
+            dur = extract_kv(msg, "durationMs")
+            evt = {
+                "time": ts_display, "time_full": ts_str,
+                "type": "queue.lane.done",
+                "lane": lane,
+                "duration_ms": int(dur) if dur.isdigit() else 0,
+            }
+            events["queue"].append(evt)
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "queue", "type": "queue.done",
+                "detail": "lane=%s dur=%sms" % (lane, dur),
+            })
+
+        # --- heartbeat ---
+        elif msg.startswith("heartbeat:"):
+            # heartbeat: webhooks=0/0/0 active=1 waiting=0 queued=1
+            wh = extract_kv(msg, "webhooks")
+            active = extract_kv(msg, "active")
+            waiting = extract_kv(msg, "waiting")
+            queued = extract_kv(msg, "queued")
+            wh_parts = wh.split("/") if wh else ["0", "0", "0"]
+            evt = {
+                "time": ts_display, "time_full": ts_str,
+                "type": "diagnostic.heartbeat",
+                "webhooks_received": int(wh_parts[0]) if len(wh_parts) > 0 and wh_parts[0].isdigit() else 0,
+                "webhooks_processed": int(wh_parts[1]) if len(wh_parts) > 1 and wh_parts[1].isdigit() else 0,
+                "webhooks_errors": int(wh_parts[2]) if len(wh_parts) > 2 and wh_parts[2].isdigit() else 0,
+                "active": int(active) if active.isdigit() else 0,
+                "waiting": int(waiting) if waiting.isdigit() else 0,
+                "queued": int(queued) if queued.isdigit() else 0,
+            }
+            events["heartbeats"].append(evt)
+            # Don't add every heartbeat to timeline (too noisy), only sample
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "heartbeat", "type": "heartbeat",
+                "detail": "active=%s queued=%s webhooks=%s" % (active, queued, wh),
+            })
+
+        # --- run registered ---
+        elif msg.startswith("run registered:"):
+            session_id = extract_kv(msg, "sessionId")
+            total_active = extract_kv(msg, "totalActive")
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "session", "type": "run.registered",
+                "detail": "session=%s totalActive=%s" % (session_id, total_active),
+            })
+
+        # --- run cleared ---
+        elif msg.startswith("run cleared:"):
+            session_id = extract_kv(msg, "sessionId")
+            total_active = extract_kv(msg, "totalActive")
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "session", "type": "run.cleared",
+                "detail": "session=%s totalActive=%s" % (session_id, total_active),
+            })
+
+        # --- aborting / abort failed ---
+        elif msg.startswith("aborting run") or msg.startswith("abort failed"):
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "error", "type": "run.abort",
+                "detail": msg[:200],
+            })
+            events["errors"].append({
+                "time": ts_display, "time_full": ts_str,
+                "type": "run.abort",
+                "channel": "",
+                "detail": msg[:200],
+            })
+
+    # Sort timeline by time_full
+    events["all_timeline"].sort(key=lambda e: e.get("time_full", ""))
+    return events
 
 
 # ============================================================
@@ -752,7 +1065,8 @@ class DataStore(object):
     def __init__(self, log_dir, sessions_dirs):
         self.log_dir = log_dir
         self.sessions_dirs = sessions_dirs
-        self._cache = {}  # date -> runs dict
+        self._cache = {}  # date -> (mtime, runs dict)
+        self._events_cache = {}  # date -> (mtime, events dict)
         self._tool_data = None
         self._text_reply_usage = None
         self._tool_data_loaded = False
@@ -797,6 +1111,25 @@ class DataStore(object):
         runs = parse_log_events(filepath)
         self._cache[cache_key] = (mtime, runs)
         return runs
+
+    def _load_events(self, date):
+        filepath = os.path.join(self.log_dir, "openclaw-%s.log" % date)
+        if not os.path.isfile(filepath):
+            return {
+                "webhooks": [], "messages": [], "queue": [],
+                "sessions": [], "heartbeats": [], "errors": [],
+                "all_timeline": [],
+            }
+        try:
+            mtime = os.path.getmtime(filepath)
+        except OSError:
+            mtime = 0
+        cached = self._events_cache.get(date)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        events = parse_all_events(filepath)
+        self._events_cache[date] = (mtime, events)
+        return events
 
     def get_summary(self, date):
         runs = self._load_runs(date)
@@ -855,6 +1188,205 @@ class DataStore(object):
             "error_count": error_count,
             "models": sorted(models),
             "channels": sorted(channels),
+        }
+
+    def get_events_summary(self, date):
+        """返回所有事件的汇总统计"""
+        events = self._load_events(date)
+        runs = self._load_runs(date)
+        tool_data = self._get_tool_data()
+
+        # Count event types
+        webhooks_received = sum(1 for w in events["webhooks"] if w.get("type") == "webhook.received")
+        webhook_errors = sum(1 for w in events["webhooks"] if w.get("type") == "webhook.error")
+        messages_queued = sum(1 for m in events["messages"] if m.get("type") == "message.queued")
+        messages_processed = sum(1 for m in events["messages"] if m.get("type") == "message.processed")
+        queue_enqueues = sum(1 for q in events["queue"] if q.get("type") == "queue.lane.enqueue")
+        queue_dequeues = sum(1 for q in events["queue"] if q.get("type") == "queue.lane.dequeue")
+        session_states = sum(1 for s in events["sessions"] if s.get("type") == "session.state")
+        session_stuck = sum(1 for s in events["sessions"] if s.get("type") == "session.stuck")
+        heartbeats = len(events["heartbeats"])
+        error_count = len(events["errors"])
+
+        # Message processing stats
+        process_durations = []
+        msg_outcomes = {}
+        for m in events["messages"]:
+            if m.get("type") == "message.processed":
+                dur = m.get("duration_ms", 0)
+                if dur > 0:
+                    process_durations.append(dur)
+                outcome = m.get("outcome", "unknown")
+                msg_outcomes[outcome] = msg_outcomes.get(outcome, 0) + 1
+
+        avg_process_ms = int(sum(process_durations) / len(process_durations)) if process_durations else 0
+
+        # Queue wait stats
+        queue_waits = []
+        for q in events["queue"]:
+            if q.get("type") == "queue.lane.dequeue":
+                wms = q.get("wait_ms", 0)
+                if wms > 0:
+                    queue_waits.append(wms)
+        avg_queue_wait_ms = int(sum(queue_waits) / len(queue_waits)) if queue_waits else 0
+
+        # Webhook stats by channel
+        wh_by_channel = {}
+        for w in events["webhooks"]:
+            ch = w.get("channel", "unknown")
+            if ch not in wh_by_channel:
+                wh_by_channel[ch] = {"received": 0, "errors": 0}
+            if w.get("type") == "webhook.received":
+                wh_by_channel[ch]["received"] += 1
+            elif w.get("type") == "webhook.error":
+                wh_by_channel[ch]["errors"] += 1
+
+        # Session state transitions
+        transitions = {}
+        for s in events["sessions"]:
+            if s.get("type") == "session.state":
+                key = "%s→%s" % (s.get("prev", "?"), s.get("new", "?"))
+                transitions[key] = transitions.get(key, 0) + 1
+
+        # Model usage from runs + session tool data
+        total_input = 0
+        total_output = 0
+        total_cache_read = 0
+        total_cache_write = 0
+        model_usage_map = {}
+        seen_usage = set()
+        for run in runs.values():
+            for t in run.get("tools", []):
+                tc_id = t.get("toolCallId", "")
+                td = tool_data.get(tc_id, {})
+                usage = td.get("usage", {})
+                uid = id(usage)
+                if usage and uid not in seen_usage:
+                    seen_usage.add(uid)
+                    inp = usage.get("input", 0)
+                    out = usage.get("output", 0)
+                    cr = usage.get("cacheRead", 0)
+                    cw = usage.get("cacheWrite", 0)
+                    total_input += inp
+                    total_output += out
+                    total_cache_read += cr
+                    total_cache_write += cw
+                    model = run.get("model", "unknown")
+                    if model not in model_usage_map:
+                        model_usage_map[model] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+                    model_usage_map[model]["input"] += inp
+                    model_usage_map[model]["output"] += out
+                    model_usage_map[model]["cache_read"] += cr
+                    model_usage_map[model]["cache_write"] += cw
+
+        by_model = []
+        for model, stats in model_usage_map.items():
+            by_model.append({
+                "model": model,
+                "input": stats["input"],
+                "output": stats["output"],
+                "cache_read": stats["cache_read"],
+                "cache_write": stats["cache_write"],
+            })
+
+        by_outcome = [{"outcome": k, "count": v} for k, v in msg_outcomes.items()]
+        by_channel = [{"channel": k, "received": v["received"], "errors": v["errors"]}
+                      for k, v in wh_by_channel.items()]
+        state_transitions = [{"transition": k, "count": v} for k, v in transitions.items()]
+
+        total_events = (webhooks_received + webhook_errors + messages_queued +
+                       messages_processed + queue_enqueues + queue_dequeues +
+                       session_states + session_stuck + heartbeats)
+
+        return {
+            "date": date,
+            "summary": {
+                "total_events": total_events,
+                "runs": len(runs),
+                "webhooks_received": webhooks_received,
+                "webhook_errors": webhook_errors,
+                "messages_queued": messages_queued,
+                "messages_processed": messages_processed,
+                "queue_enqueues": queue_enqueues,
+                "queue_dequeues": queue_dequeues,
+                "session_states": session_states,
+                "session_stuck": session_stuck,
+                "heartbeats": heartbeats,
+                "errors": error_count,
+            },
+            "model_usage": {
+                "total_input_tokens": total_input,
+                "total_output_tokens": total_output,
+                "total_cache_read": total_cache_read,
+                "total_cache_write": total_cache_write,
+                "by_model": by_model,
+            },
+            "webhook_stats": {
+                "error_rate": round(webhook_errors / max(webhooks_received, 1), 3),
+                "by_channel": by_channel,
+            },
+            "message_stats": {
+                "avg_process_time_ms": avg_process_ms,
+                "avg_queue_wait_ms": avg_queue_wait_ms,
+                "by_outcome": by_outcome,
+            },
+            "session_stats": {
+                "state_transitions": state_transitions,
+                "stuck_count": session_stuck,
+            },
+        }
+
+    def get_events_timeline(self, date, page=1, per_page=50, category_filter=None):
+        """返回事件时间线（分页）"""
+        events = self._load_events(date)
+        timeline = events.get("all_timeline", [])
+
+        # Filter by category
+        if category_filter:
+            filters = set(category_filter.split(","))
+            timeline = [e for e in timeline if e.get("category", "") in filters]
+
+        total = len(timeline)
+        # Reverse for newest first
+        timeline_rev = list(reversed(timeline))
+        total_pages = max(1, math.ceil(total / per_page)) if per_page > 0 else 1
+        page = max(1, min(page, total_pages))
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+
+        return {
+            "events": timeline_rev[start_idx:end_idx],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+        }
+
+    def get_events_webhooks(self, date):
+        """返回 webhook 事件列表"""
+        events = self._load_events(date)
+        return {
+            "date": date,
+            "webhooks": events.get("webhooks", []),
+            "total": len(events.get("webhooks", [])),
+        }
+
+    def get_events_messages(self, date):
+        """返回消息事件列表"""
+        events = self._load_events(date)
+        return {
+            "date": date,
+            "messages": events.get("messages", []),
+            "total": len(events.get("messages", [])),
+        }
+
+    def get_events_errors(self, date):
+        """返回错误事件列表"""
+        events = self._load_events(date)
+        return {
+            "date": date,
+            "errors": events.get("errors", []),
+            "total": len(events.get("errors", [])),
         }
 
     def get_runs_list(self, date, page=1, per_page=20):
@@ -1205,6 +1737,57 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({"error": "run not found"}, 404)
                 else:
                     self._send_json(detail)
+            # === New event API endpoints ===
+            elif path == "/api/events":
+                date = params.get("date", [""])[0]
+                if not date:
+                    dates = self.data_store.get_dates()
+                    date = dates[0] if dates else ""
+                if not date:
+                    self._send_json({"date": "", "summary": {}})
+                    return
+                result = self.data_store.get_events_summary(date)
+                self._send_json(result)
+            elif path == "/api/events/timeline":
+                date = params.get("date", [""])[0]
+                if not date:
+                    self._send_json({"events": [], "total": 0, "page": 1, "per_page": 50, "total_pages": 1})
+                    return
+                page = 1
+                per_page = 50
+                try:
+                    page = int(params.get("page", ["1"])[0])
+                except (ValueError, IndexError):
+                    pass
+                try:
+                    per_page = int(params.get("per_page", ["50"])[0])
+                except (ValueError, IndexError):
+                    pass
+                category = params.get("category", [""])[0]
+                per_page = max(1, min(per_page, 500))
+                result = self.data_store.get_events_timeline(date, page, per_page, category or None)
+                self._send_json(result)
+            elif path == "/api/events/webhooks":
+                date = params.get("date", [""])[0]
+                if not date:
+                    self._send_json({"date": "", "webhooks": [], "total": 0})
+                    return
+                result = self.data_store.get_events_webhooks(date)
+                self._send_json(result)
+            elif path == "/api/events/messages":
+                date = params.get("date", [""])[0]
+                if not date:
+                    self._send_json({"date": "", "messages": [], "total": 0})
+                    return
+                result = self.data_store.get_events_messages(date)
+                self._send_json(result)
+            elif path == "/api/events/errors":
+                date = params.get("date", [""])[0]
+                if not date:
+                    self._send_json({"date": "", "errors": [], "total": 0})
+                    return
+                result = self.data_store.get_events_errors(date)
+                self._send_json(result)
             else:
                 self._send_json({"error": "not found"}, 404)
         except Exception as e:

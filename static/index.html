@@ -26,8 +26,56 @@
       </label>
     </div>
   </div>
+
+  <!-- 总览摘要卡片 -->
   <div id="summaryCards" class="cards"></div>
+  <div id="summaryCards2" class="cards"></div>
+
+  <!-- 消息处理流水线 -->
+  <div id="pipelineSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleSection(this)">
+      <h2>📡 消息处理流水线</h2>
+      <span class="toggle-icon">▼</span>
+    </div>
+    <div class="section-body open" id="pipelineBody"></div>
+  </div>
+
+  <!-- Webhook 监控 -->
+  <div id="webhookSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleSection(this)">
+      <h2>🌐 Webhook 监控</h2>
+      <span class="section-badge" id="webhookBadge"></span>
+      <span class="toggle-icon">▼</span>
+    </div>
+    <div class="section-body" id="webhookBody"></div>
+  </div>
+
+  <!-- Run 列表 -->
   <div id="content"></div>
+
+  <!-- 错误日志 -->
+  <div id="errorSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleSection(this)">
+      <h2>❌ 错误日志</h2>
+      <span class="section-badge error" id="errorBadge"></span>
+      <span class="toggle-icon">▼</span>
+    </div>
+    <div class="section-body" id="errorBody"></div>
+  </div>
+
+  <!-- 事件时间线 -->
+  <div id="timelineSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleSection(this)">
+      <h2>📋 事件时间线</h2>
+      <span class="section-badge" id="timelineBadge"></span>
+      <span class="toggle-icon">▼</span>
+    </div>
+    <div class="section-body" id="timelineBody">
+      <div class="timeline-filters" id="timelineFilters"></div>
+      <div id="timelineContent"></div>
+      <div id="timelinePagination" class="pagination"></div>
+    </div>
+  </div>
 </div>
 <script src="/static/app.js"></script>
 </body>
