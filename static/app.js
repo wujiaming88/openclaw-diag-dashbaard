@@ -116,6 +116,12 @@ function fetchSummary(date) {
   });
 }
 
+function fetchEventsSummary(date) {
+  api('/api/events?date=' + date, function (data) {
+    renderEventsSummary(data);
+  });
+}
+
 function fetchRuns(date, page, pp) {
   api('/api/runs?date=' + date + '&page=' + page + '&per_page=' + pp, function (data) {
     renderRunList(data);
@@ -211,6 +217,12 @@ var TIPS = {
   promptMsg: 'Prompt 中的消息条数。包含系统提示、对话历史、工具定义等',
   promptHistory: '对话历史的字符数。越大说明上下文越长，推理越慢',
   promptSys: '系统提示的字符数。包含人设、规则、技能定义等固定内容',
+  cacheHit: '缓存命中率。高命中率说明上下文被有效缓存，可降低延迟和费用',
+  webhooks: '收到的 Webhook 请求数。来自 Telegram 等渠道的原始消息推送',
+  msgProcessed: '成功处理完成的消息数。包含排队、推理、回复全流程',
+  avgProcessTime: '消息从入队到处理完成的平均耗时。反映整体响应速度',
+  avgQueueWait: '消息在队列中等待的平均时间。过长说明并发处理能力不足',
+  sessionStuck: '会话卡住的次数。表示某个会话长时间未完成，可能需要人工介入',
 };
 
 function tipAttr(key) {
@@ -249,6 +261,27 @@ function renderSummary(s) {
 }
 
 // 也在 showEmpty 中清除
+// 渲染 — Run 列表
+// ============================================================
+function renderEventsSummary(data) {
+  var el = $('#summaryCards3');
+  if (!data || !data.summary) { el.innerHTML = ''; return; }
+  var s = data.summary;
+  var ms_stats = data.message_stats || {};
+  var ss = data.session_stats || {};
+  // 只在有数据时显示
+  var total = (s.webhooks_received || 0) + (s.messages_processed || 0) + (s.total_events || 0);
+  if (total === 0) { el.innerHTML = ''; return; }
+  var html = '';
+  html += '<div class="card"><div class="label">Webhook' + tipIcon('webhooks') + '</div><div class="value">' + (s.webhooks_received || 0) + '</div></div>';
+  html += '<div class="card"><div class="label">消息处理' + tipIcon('msgProcessed') + '</div><div class="value">' + (s.messages_processed || 0) + '</div></div>';
+  html += '<div class="card"><div class="label">平均处理时间' + tipIcon('avgProcessTime') + '</div><div class="value">' + fmtMs(ms_stats.avg_process_time_ms || 0) + '</div></div>';
+  html += '<div class="card"><div class="label">平均队列等待' + tipIcon('avgQueueWait') + '</div><div class="value">' + fmtMs(ms_stats.avg_queue_wait_ms || 0) + '</div></div>';
+  var stuckCls = (ss.stuck_count || 0) > 0 ? ' warn' : '';
+  html += '<div class="card' + stuckCls + '"><div class="label">会话卡住' + tipIcon('sessionStuck') + '</div><div class="value">' + (ss.stuck_count || 0) + '</div></div>';
+  el.innerHTML = html;
+}
+
 // 渲染 — Run 列表
 // ============================================================
 function renderRunList(data) {
@@ -425,6 +458,7 @@ function renderRunDetail(d, el) {
 function showEmpty() {
   $('#summaryCards').innerHTML = '';
   $('#summaryCards2').innerHTML = '';
+  $('#summaryCards3').innerHTML = '';
   $('#content').innerHTML = '<div class="empty"><div class="icon">📭</div><p>暂无诊断数据</p><p style="margin-top:8px;font-size:13px">等待 OpenClaw 生成日志后自动显示</p></div>';
 }
 
@@ -436,6 +470,7 @@ function loadData() {
   showLoading();
   var d = currentDate;
   fetchSummary(d);
+  fetchEventsSummary(d);
   fetchRuns(d, currentPage, perPage);
 }
 
