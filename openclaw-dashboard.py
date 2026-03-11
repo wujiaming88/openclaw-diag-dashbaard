@@ -20,6 +20,8 @@ if sys.version_info < (3, 6):
 
 import argparse
 import glob
+import gzip
+import hashlib
 import json
 import math
 import os
@@ -1806,35 +1808,102 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return True
         return False
 
+    # 静态文件缓存: filepath -> (mtime, body_bytes, etag, gzip_bytes)
+    _static_cache = {}
+
+    def _accepts_gzip(self):
+        """检查客户端是否支持 gzip"""
+        ae = self.headers.get("Accept-Encoding", "")
+        return "gzip" in ae
+
+    def _gzip_body(self, body):
+        """gzip 压缩 bytes，返回压缩后的 bytes"""
+        return gzip.compress(body, compresslevel=6)
+
+    def _send_body(self, body, content_type, status=200, cache_control="no-cache", etag=None):
+        """统一发送响应，自动处理 gzip 和 ETag"""
+        # ETag 304 检查
+        if etag:
+            inm = self.headers.get("If-None-Match", "")
+            if inm == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", cache_control)
+                self.end_headers()
+                return
+
+        # gzip 压缩 (>1KB 的文本响应)
+        use_gzip = False
+        gzip_body = None
+        if self._accepts_gzip() and len(body) > 1024:
+            ct_lower = content_type.lower()
+            if any(t in ct_lower for t in ("text/", "json", "javascript", "xml", "svg")):
+                gzip_body = self._gzip_body(body)
+                # 只在压缩有效时使用 (至少省 10%)
+                if len(gzip_body) < len(body) * 0.9:
+                    use_gzip = True
+
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        if etag:
+            self.send_header("ETag", etag)
+        if use_gzip:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(gzip_body)))
+            self.send_header("Vary", "Accept-Encoding")
+            self.end_headers()
+            self.wfile.write(gzip_body)
+        else:
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
     def _send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_body(body, "application/json; charset=utf-8", status=status)
 
     def _send_file(self, filepath, content_type=None):
-        """发送静态文件"""
+        """发送静态文件，支持缓存、ETag、gzip"""
         if not os.path.isfile(filepath):
             self.send_error(404, "Not Found")
             return
         if content_type is None:
             ext = os.path.splitext(filepath)[1].lower()
             content_type = MIME_TYPES.get(ext, "application/octet-stream")
+
         try:
-            with open(filepath, "rb") as f:
-                body = f.read()
-        except (IOError, OSError):
-            self.send_error(500, "Read Error")
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(body)
+            mtime = os.path.getmtime(filepath)
+        except OSError:
+            mtime = 0
+
+        # 检查静态文件缓存
+        cached = DashboardHandler._static_cache.get(filepath)
+        if cached and cached[0] == mtime:
+            body, etag = cached[1], cached[2]
+        else:
+            try:
+                with open(filepath, "rb") as f:
+                    body = f.read()
+            except (IOError, OSError):
+                self.send_error(500, "Read Error")
+                return
+            etag = '"%s"' % hashlib.md5(body).hexdigest()
+            DashboardHandler._static_cache[filepath] = (mtime, body, etag)
+
+        # 带版本号的静态资源用长缓存，否则 no-cache
+        qs = urlparse(self.path).query
+        if "v=" in qs:
+            cache_ctl = "public, max-age=86400, immutable"
+        else:
+            cache_ctl = "no-cache"
+
+        self._send_body(body, content_type, cache_control=cache_ctl, etag=etag)
+
+    def do_HEAD(self):
+        """支持 HEAD 请求（浏览器预检、缓存验证）"""
+        self.do_GET()
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -1864,6 +1933,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/system_info":
                 info = get_system_info(self.data_store, self.config_path, self.config_data)
                 self._send_json(info)
+            elif path == "/api/dashboard":
+                # 批量接口: 一次返回 summary + events + runs，减少前端请求数
+                date = params.get("date", [""])[0]
+                if not date:
+                    dates = self.data_store.get_dates()
+                    date = dates[0] if dates else ""
+                if not date:
+                    self._send_json({
+                        "date": "",
+                        "summary": {"total_runs": 0},
+                        "events": {"date": "", "summary": {}},
+                        "runs": {"runs": [], "total": 0, "page": 1, "per_page": 20, "total_pages": 1}
+                    })
+                    return
+                page = 1
+                per_page = 20
+                try:
+                    page = int(params.get("page", ["1"])[0])
+                except (ValueError, IndexError):
+                    pass
+                try:
+                    per_page = int(params.get("per_page", ["20"])[0])
+                except (ValueError, IndexError):
+                    pass
+                per_page = max(1, min(per_page, 500))
+                result = {
+                    "date": date,
+                    "summary": self.data_store.get_summary(date),
+                    "events": self.data_store.get_events_summary(date),
+                    "runs": self.data_store.get_runs_list(date, page, per_page),
+                }
+                self._send_json(result)
             elif path == "/api/summary":
                 date = params.get("date", [""])[0]
                 if not date:

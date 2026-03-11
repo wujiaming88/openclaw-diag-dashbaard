@@ -75,6 +75,7 @@ function eventTagHtml(category) {
 function api(path, cb) {
   var x = new XMLHttpRequest();
   x.open('GET', path);
+  x.setRequestHeader('Accept-Encoding', 'gzip, deflate');
   x.onload = function () {
     if (x.status === 200) {
       try { cb(JSON.parse(x.responseText)); } catch (e) { cb(null); }
@@ -112,6 +113,8 @@ function fetchDates() {
 
 function fetchSummary(date) {
   api('/api/summary?date=' + date, function (summary) {
+    var skeleton = $('#skeletonCards');
+    if (skeleton) skeleton.style.display = 'none';
     renderSummary(summary);
   });
 }
@@ -520,9 +523,23 @@ function showLoading() {
 function loadData() {
   showLoading();
   var d = currentDate;
-  fetchSummary(d);
-  fetchEventsSummary(d);
-  fetchRuns(d, currentPage, perPage);
+  // 使用批量接口 /api/dashboard 一次获取所有数据，减少 HTTP 请求
+  api('/api/dashboard?date=' + d + '&page=' + currentPage + '&per_page=' + perPage, function (data) {
+    // 移除骨架屏
+    var skeleton = $('#skeletonCards');
+    if (skeleton) skeleton.style.display = 'none';
+    if (!data) {
+      // 回退到分离请求
+      fetchSummary(d);
+      fetchEventsSummary(d);
+      fetchRuns(d, currentPage, perPage);
+      return;
+    }
+    renderSummary(data.summary);
+    renderEventsSummary(data.events);
+    renderPipeline(data.events);
+    renderRunList(data.runs);
+  });
 }
 
 // ============================================================
