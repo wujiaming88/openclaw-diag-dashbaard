@@ -457,15 +457,12 @@ total_errors = len(errors)
 total_sends = len(sends)
 
 def calc_inference_segments(r):
-    """精确计算每段推理时间:
-       agent_start -> 第一个 tool_start  (第1次推理)
-       tool_end[0] -> tool_start[1]      (第2次推理)
-       tool_end[1] -> tool_start[2]      (第3次推理)
-       ...
-       tool_end[-1] -> run_end           (最后一次推理, 生成回复)
+    """精确计算每段推理时间，合并批量工具调用 (gap < 500ms)。
     返回: (segments_list, total_inference_ms, total_tool_ms)
+    segments_list: [(label, ms, tool_indices)]  tool_indices = list of int
     """
-    segments = []  # [(label, ms)]
+    BATCH_GAP_MS = 500
+    segments = []  # [(label, ms, tool_indices)]
     total_tool_ms = 0
 
     if not r["first_token"]:
@@ -475,40 +472,74 @@ def calc_inference_segments(r):
     if not ft:
         return segments, 0, 0
 
-    # 计算每段工具执行和推理
-    prev_end = ft  # 上一段结束时间, 初始为 agent_start
+    tools = r["tools"]
 
-    for idx, tool in enumerate(r["tools"]):
+    if not tools:
+        if r["end"]:
+            run_end = parse_time(r["end"])
+            if run_end:
+                total_ms = (run_end - ft).total_seconds() * 1000
+                segments.append(("推理#1(生成回复)", total_ms, []))
+        return segments, sum(ms for _, ms, _ in segments), 0
+
+    # Parse all tool times
+    parsed = []  # [(start_dt, end_dt, index)]
+    for idx, tool in enumerate(tools):
         ts = parse_time(tool["start"])
         te = parse_time(tool["end"]) if tool["end"] else None
+        if ts:
+            parsed.append((ts, te, idx))
 
-        if ts and prev_end:
-            infer_ms = (ts - prev_end).total_seconds() * 1000
-            if infer_ms > 0:
-                segments.append((f"推理#{len(segments)+1}", infer_ms))
+    if not parsed:
+        return segments, 0, 0
 
-        if ts and te:
-            t_ms = (te - ts).total_seconds() * 1000
-            total_tool_ms += t_ms
-            prev_end = te
-        elif ts:
-            prev_end = ts  # 工具还在执行
+    # Group into batches by gap < 500ms
+    batches = []  # each batch = [(start_dt, end_dt, tool_idx), ...]
+    current_batch = [parsed[0]]
+    for i in range(1, len(parsed)):
+        prev_end = current_batch[-1][1]  # end of previous tool
+        cur_start = parsed[i][0]
+        if prev_end and cur_start and (cur_start - prev_end).total_seconds() * 1000 < BATCH_GAP_MS:
+            current_batch.append(parsed[i])
+        else:
+            batches.append(current_batch)
+            current_batch = [parsed[i]]
+    batches.append(current_batch)
 
-    # 最后一段: 最后一个工具结束 -> run_end
+    # Calculate tool_ms
+    for batch in batches:
+        for ts, te, idx in batch:
+            if ts and te:
+                total_tool_ms += (te - ts).total_seconds() * 1000
+
+    # Build inference segments
+    prev_end = ft  # starts at agent_start (first_token)
+
+    for b_idx, batch in enumerate(batches):
+        batch_start = batch[0][0]  # first tool start in batch
+        tool_indices = [item[2] for item in batch]
+
+        # Inference before this batch
+        infer_ms = (batch_start - prev_end).total_seconds() * 1000
+        if infer_ms > 0:
+            segments.append((f"推理#{len(segments)+1}", infer_ms, tool_indices))
+
+        # Update prev_end to end of last tool in batch
+        last_end = batch[-1][1]
+        if last_end:
+            prev_end = last_end
+        else:
+            prev_end = batch[-1][0]
+
+    # Final segment: last batch end -> run_end
     if r["end"] and prev_end:
         run_end = parse_time(r["end"])
         if run_end:
             last_ms = (run_end - prev_end).total_seconds() * 1000
             if last_ms > 0:
-                segments.append((f"推理#{len(segments)+1}(生成回复)", last_ms))
-    elif not r["tools"] and r["end"]:
-        # 没有工具调用, 整段都是推理
-        run_end = parse_time(r["end"])
-        if run_end:
-            total_ms = (run_end - ft).total_seconds() * 1000
-            segments.append(("推理#1(生成回复)", total_ms))
+                segments.append((f"推理#{len(segments)+1}(生成回复)", last_ms, []))
 
-    total_infer = sum(ms for _, ms in segments)
+    total_infer = sum(ms for _, ms, _ in segments)
     return segments, total_infer, total_tool_ms
 
 run_durations = []
@@ -710,76 +741,59 @@ for i, (run_id, r) in enumerate(sorted_runs):
     run_inference_count = 0
     seen_usage_ids = set()  # 避免同一条 usage 被多个 toolCall 重复计数
 
-    # 从工具 ID 关联 usage
-    per_inference = []  # [(label, ms, usage_or_None)]
+    # 从 calc_inference_segments 返回的 segments 构建 per_inference
+    per_inference = []  # [(label, ms, merged_usage_or_None)]
 
-    prev_end_t = parse_time(r["first_token"]) if r["first_token"] else None
-    for idx, tool in enumerate(r["tools"]):
-        ts_t = parse_time(tool["start"])
-        te_t = parse_time(tool["end"]) if tool["end"] else None
+    for label, ms, tool_indices in segments:
+        merged_usage = None
+        merged_output = 0
+        merged_input = 0
+        merged_cache_read = 0
+        merged_cache_write = 0
+        found_any = False
 
-        infer_ms = 0
-        if ts_t and prev_end_t:
-            infer_ms = (ts_t - prev_end_t).total_seconds() * 1000
+        for ti in tool_indices:
+            if ti < len(r["tools"]):
+                tool = r["tools"][ti]
+                usage_rec = inference_usage.get(tool["id"])
+                if usage_rec and id(usage_rec) not in seen_usage_ids:
+                    seen_usage_ids.add(id(usage_rec))
+                    merged_input += usage_rec["input"]
+                    merged_output += usage_rec["output"]
+                    merged_cache_read += usage_rec["cacheRead"]
+                    merged_cache_write += usage_rec["cacheWrite"]
+                    found_any = True
 
-        # 查找这次推理的 usage (通过 toolCallId)
-        usage_rec = inference_usage.get(tool["id"])
-        if usage_rec and id(usage_rec) not in seen_usage_ids:
-            seen_usage_ids.add(id(usage_rec))
-            run_total_input += usage_rec["input"]
-            run_total_output += usage_rec["output"]
-            run_total_cache_read += usage_rec["cacheRead"]
-            run_total_cache_write += usage_rec["cacheWrite"]
-            run_inference_count += 1
-            per_inference.append((f"推理#{run_inference_count}", infer_ms, usage_rec))
-        elif infer_ms > 0:
-            per_inference.append((f"推理#{len(per_inference)+1}", infer_ms, None))
-
-        if te_t:
-            prev_end_t = te_t
-        elif ts_t:
-            prev_end_t = ts_t
-
-    # 最后一段: 最后工具结束 -> run_end (生成回复)
-    if r["end"] and prev_end_t:
-        run_end_t = parse_time(r["end"])
-        if run_end_t:
-            last_ms = (run_end_t - prev_end_t).total_seconds() * 1000
-            if last_ms > 0:
-                # 查找最接近 run_end 的纯文本回复 usage
-                last_usage = None
-                end_str = r["end"][:23]
+        if not tool_indices and "(生成回复)" in label:
+            # Final segment or no-tool run: find text reply usage
+            if r["end"] and r["start"]:
                 for ts_str, u in text_reply_usage:
                     if ts_str[:19] >= r["start"][:19] and ts_str[:19] <= r["end"][:19]:
                         if id(u) not in seen_usage_ids:
-                            last_usage = u
-                if last_usage:
-                    seen_usage_ids.add(id(last_usage))
-                    run_total_input += last_usage["input"]
-                    run_total_output += last_usage["output"]
-                    run_total_cache_read += last_usage["cacheRead"]
-                    run_total_cache_write += last_usage["cacheWrite"]
-                    run_inference_count += 1
-                per_inference.append((f"推理#{len(per_inference)+1}(生成回复)", last_ms, last_usage))
-    elif not r["tools"] and r["end"] and r["first_token"]:
-        ft = parse_time(r["first_token"])
-        run_end_t = parse_time(r["end"])
-        if ft and run_end_t:
-            only_ms = (run_end_t - ft).total_seconds() * 1000
-            # 找纯文本回复的 usage
-            reply_usage = None
-            for ts_str, u in text_reply_usage:
-                if ts_str[:19] >= r["start"][:19] and ts_str[:19] <= r["end"][:19]:
-                    if id(u) not in seen_usage_ids:
-                        reply_usage = u
-            if reply_usage:
-                seen_usage_ids.add(id(reply_usage))
-                run_total_input += reply_usage["input"]
-                run_total_output += reply_usage["output"]
-                run_total_cache_read += reply_usage["cacheRead"]
-                run_total_cache_write += reply_usage["cacheWrite"]
-                run_inference_count += 1
-            per_inference.append(("推理#1(生成回复)", only_ms, reply_usage))
+                            merged_usage = u
+                            seen_usage_ids.add(id(u))
+                            merged_input += u["input"]
+                            merged_output += u["output"]
+                            merged_cache_read += u["cacheRead"]
+                            merged_cache_write += u["cacheWrite"]
+                            found_any = True
+                            break
+
+        if found_any:
+            run_total_input += merged_input
+            run_total_output += merged_output
+            run_total_cache_read += merged_cache_read
+            run_total_cache_write += merged_cache_write
+            run_inference_count += 1
+            combined = {
+                "input": merged_input,
+                "output": merged_output,
+                "cacheRead": merged_cache_read,
+                "cacheWrite": merged_cache_write,
+            }
+            per_inference.append((label, ms, combined))
+        elif ms > 0:
+            per_inference.append((label, ms, None))
 
     run_total_tokens = run_total_input + run_total_output + run_total_cache_read + run_total_cache_write
 
