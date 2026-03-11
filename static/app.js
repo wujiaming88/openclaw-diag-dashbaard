@@ -185,21 +185,32 @@ function renderSystemInfo(info) {
 // ============================================================
 // 指标解读提示
 var TIPS = {
-  runs: 'Agent 处理用户消息的总次数。每次用户发送消息触发一次 Run',
-  avgDur: '从收到消息到回复完成的平均端到端耗时。包含推理和工具执行',
-  inferRatio: '推理（等待模型响应）占总耗时的比例。越高说明瓶颈在模型侧，越低说明工具执行耗时多',
-  totalTokens: '模型生成的输出 Token 总数。Token 数量直接影响费用',
-  errors: '处理失败的 Run 数。可能由模型超时、工具报错等引起',
-  webhooks: '收到的 Webhook 请求数（来自 Telegram 等渠道的原始消息）',
-  msgProcessed: '成功处理完成的消息数（含排队、推理、回复全流程）',
-  avgProcessTime: '消息从入队到处理完成的平均耗时。反映整体响应速度',
-  avgQueueWait: '消息在队列中等待的平均时间。过长说明并发处理能力不足',
-  sessionStuck: '会话卡住的次数。表示某个会话长时间未完成，可能需要人工介入',
-  totalEvents: '当天所有诊断事件（webhook、消息、队列、会话等）的总数',
-  tokPerS: '模型输出 Token 的速率（每秒 Token 数）。Opus 通常 20-50 tok/s，Sonnet 通常 50-100 tok/s',
-  cacheHit: '缓存命中率。高命中率说明上下文被有效缓存，可降低延迟和费用',
-  inferSeg: '模型每次推理的耗时。一个 Run 中模型可能多次推理（每次工具调用前后各一次）',
-  outputTokens: '该段推理模型输出的 Token 数。结合耗时可判断模型响应效率',
+  // 摘要卡片
+  runs: 'Agent 处理用户消息的总次数。每次用户发消息或系统触发都算一次 Run',
+  avgDur: '从收到消息到回复完成的平均端到端耗时。包含推理等待和工具执行',
+  inferRatio: '推理（等待模型响应）占总耗时的比例。越高说明瓶颈在模型侧；越低说明工具执行耗时多',
+  totalTokens: '模型生成的输出 Token 总数。Token 数量直接决定 API 费用',
+  errors: '处理失败的 Run 数。常见原因：模型超时、工具报错、会话异常',
+  // Run 详情汇总条
+  e2e: '端到端耗时 = 从 Agent 收到消息开始，到最终回复发送完毕的总时间',
+  inferTotal: '所有推理段的总耗时。模型每次决定调用工具或生成回复前都需要推理',
+  toolTotal: '所有工具执行的总耗时。包括 exec、read、write、web_search 等',
+  outputToken: '本次 Run 模型输出的总 Token 数。包含工具调用指令和最终回复文本',
+  tokPerS: '模型输出速率（Token/秒）。Opus 通常 20-50 tok/s，Sonnet 50-100 tok/s，Haiku 100-200 tok/s',
+  model: '本次 Run 使用的模型。不同模型在速度、质量、费用之间有不同权衡',
+  channel: '消息来源渠道（如 Telegram、Discord）。影响消息格式和传输延迟',
+  // Token 摘要
+  tokenInput: 'Input Token: 发送给模型的输入 Token 数（不含缓存部分）。通常很少，因为大部分被缓存命中',
+  tokenOutput: 'Output Token: 模型生成的输出 Token 数。这是主要的费用来源',
+  tokenCacheRead: 'Cache Read: 从缓存中读取的 Token 数。命中缓存可节省 90% 的输入费用',
+  tokenCacheWrite: 'Cache Write: 写入缓存的 Token 数。首次对话或上下文变化时产生',
+  // 推理分段
+  inferSeg: '模型的每次推理过程。第一次推理决定要做什么（调用工具或直接回复），后续推理处理工具结果',
+  outputTokens: '该段推理中模型输出的 Token 数。越多说明回复越长或工具调用参数越复杂',
+  // Prompt
+  promptMsg: 'Prompt 中的消息条数。包含系统提示、对话历史、工具定义等',
+  promptHistory: '对话历史的字符数。越大说明上下文越长，推理越慢',
+  promptSys: '系统提示的字符数。包含人设、规则、技能定义等固定内容',
 };
 
 function tipAttr(key) {
@@ -363,29 +374,32 @@ function renderRunDetail(d, el) {
 
   // 汇总条
   html += '<div class="summary-bar">';
-  html += '<div class="item"><div class="val">' + fmtMs(d.duration_ms) + '</div><div class="lbl">端到端</div></div>';
-  html += '<div class="item"><div class="val">' + fmtMs(d.infer_ms) + '</div><div class="lbl">推理总耗时</div></div>';
-  html += '<div class="item"><div class="val">' + fmtMs(d.tool_ms) + '</div><div class="lbl">工具总耗时</div></div>';
-  html += '<div class="item"><div class="val">' + fmtTok(d.total_tokens_output) + '</div><div class="lbl">输出 Token</div></div>';
-  html += '<div class="item"><div class="val">' + (d.overall_tok_per_s || 0) + ' tok/s</div><div class="lbl">输出速率</div></div>';
-  html += '<div class="item"><div class="val">' + escHtml(d.model) + '</div><div class="lbl">模型</div></div>';
-  html += '<div class="item"><div class="val">' + escHtml(d.channel) + '</div><div class="lbl">通道</div></div>';
+  html += '<div class="item"><div class="val">' + fmtMs(d.duration_ms) + '</div><div class="lbl">端到端' + tipIcon('e2e') + '</div></div>';
+  html += '<div class="item"><div class="val">' + fmtMs(d.infer_ms) + '</div><div class="lbl">推理总耗时' + tipIcon('inferTotal') + '</div></div>';
+  html += '<div class="item"><div class="val">' + fmtMs(d.tool_ms) + '</div><div class="lbl">工具总耗时' + tipIcon('toolTotal') + '</div></div>';
+  html += '<div class="item"><div class="val">' + fmtTok(d.total_tokens_output) + '</div><div class="lbl">输出 Token' + tipIcon('outputToken') + '</div></div>';
+  html += '<div class="item"><div class="val">' + (d.overall_tok_per_s || 0) + ' tok/s</div><div class="lbl">输出速率' + tipIcon('tokPerS') + '</div></div>';
+  html += '<div class="item"><div class="val">' + escHtml(d.model) + '</div><div class="lbl">模型' + tipIcon('model') + '</div></div>';
+  html += '<div class="item"><div class="val">' + escHtml(d.channel) + '</div><div class="lbl">通道' + tipIcon('channel') + '</div></div>';
   html += '</div>';
 
   // Token 摘要
   if (d.token_summary) {
     var ts = d.token_summary;
     html += '<div style="margin-top:8px;font-size:12px;color:var(--text2)">';
-    html += 'Token: input=' + fmtTok(ts.input) + ' output=' + fmtTok(ts.output) + ' cacheRead=' + fmtTok(ts.cacheRead) + ' cacheWrite=' + fmtTok(ts.cacheWrite);
+    html += 'Token: <span class="tip-wrap">input=' + fmtTok(ts.input) + tipIcon('tokenInput') + '</span>';
+    html += ' <span class="tip-wrap">output=' + fmtTok(ts.output) + tipIcon('tokenOutput') + '</span>';
+    html += ' <span class="tip-wrap">cacheRead=' + fmtTok(ts.cacheRead) + tipIcon('tokenCacheRead') + '</span>';
+    html += ' <span class="tip-wrap">cacheWrite=' + fmtTok(ts.cacheWrite) + tipIcon('tokenCacheWrite') + '</span>';
     html += '</div>';
   }
 
   // Prompt 信息
   if (d.prompt_info && d.prompt_info.messages) {
     html += '<div style="margin-top:4px;font-size:12px;color:var(--text2)">';
-    html += 'Prompt: messages=' + escHtml(d.prompt_info.messages);
-    if (d.prompt_info.historyTextChars) html += ' historyChars=' + escHtml(d.prompt_info.historyTextChars);
-    if (d.prompt_info.systemPromptChars) html += ' sysPromptChars=' + escHtml(d.prompt_info.systemPromptChars);
+    html += '<span class="tip-wrap">Prompt: messages=' + escHtml(d.prompt_info.messages) + tipIcon('promptMsg') + '</span>';
+    if (d.prompt_info.historyTextChars) html += ' <span class="tip-wrap">historyChars=' + escHtml(d.prompt_info.historyTextChars) + tipIcon('promptHistory') + '</span>';
+    if (d.prompt_info.systemPromptChars) html += ' <span class="tip-wrap">sysPromptChars=' + escHtml(d.prompt_info.systemPromptChars) + tipIcon('promptSys') + '</span>';
     html += '</div>';
   }
 
