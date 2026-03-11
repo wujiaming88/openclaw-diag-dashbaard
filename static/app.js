@@ -575,12 +575,12 @@ function renderRunDetail(d, el) {
       var dc = speedClass(t.duration_ms);
       var argText = t.arguments_summary || '';
       var lines = argText.split('\n');
-      var needCollapse = lines.length > 2;
+      var needCollapse = lines.length > 4;
       html += '<tr><td><strong>' + escHtml(t.tool) + '</strong></td><td class="tool-args">';
       if (argText) {
         html += '<div class="tool-args-wrap' + (needCollapse ? ' collapsed' : '') + '">';
         html += '<pre>' + escHtml(argText) + '</pre>';
-        if (needCollapse) html += '<span class="tool-args-toggle" onclick="toggleArgs(this)">▼ 展开</span>';
+        if (needCollapse) html += '<span class="tool-args-toggle" onclick="toggleArgs(this)">▼ 展开 (' + lines.length + ' 行)</span>';
         html += '</div>';
       }
       html += '</td><td class="' + dc + '">' + fmtMs(t.duration_ms) + '</td></tr>';

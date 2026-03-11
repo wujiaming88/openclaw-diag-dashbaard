@@ -147,11 +147,11 @@ tr.clickable:hover td{background:var(--hover)}
 .detail-table{width:100%;border-collapse:collapse;font-size:13px}
 .detail-table th{background:rgba(255,255,255,.05);padding:6px 8px;text-align:left;font-size:11px}
 .detail-table td{padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.05)}
-.detail-table td.tool-args{white-space:pre-wrap;word-break:break-all;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:11px;max-width:500px}
+.detail-table td.tool-args{white-space:pre-wrap;word-break:break-all;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:11px;max-width:600px}
 .tool-args-wrap{position:relative}
-.tool-args-wrap pre{margin:0;white-space:pre-wrap;word-break:break-all;font-family:inherit;font-size:inherit}
-.tool-args-wrap.collapsed pre{max-height:2.8em;overflow:hidden}
-.tool-args-toggle{display:inline-block;color:var(--accent);cursor:pointer;font-size:10px;margin-top:2px;user-select:none}
+.tool-args-wrap pre{margin:0;white-space:pre-wrap;word-break:break-all;font-family:inherit;font-size:inherit;background:var(--bg);padding:6px 8px;border-radius:4px;border:1px solid var(--border)}
+.tool-args-wrap.collapsed pre{max-height:6em;overflow:hidden}
+.tool-args-toggle{display:inline-block;color:var(--accent);cursor:pointer;font-size:10px;margin-top:4px;user-select:none;padding:2px 8px;background:var(--card);border-radius:3px;border:1px solid var(--border)}
 
 /* 汇总条 */
 .summary-bar{display:flex;gap:20px;flex-wrap:wrap;padding:12px 16px;background:var(--card);border-radius:8px;border:1px solid var(--border);margin-top:12px;font-size:13px}
