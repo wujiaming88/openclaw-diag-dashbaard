@@ -1,31 +1,40 @@
 # OpenClaw 诊断面板
 
-基于 Web 的 [OpenClaw](https://github.com/nicepkg/openclaw) AI 代理平台性能诊断工具。单文件 Python 服务，零外部依赖 — 开箱即用。
-
-![Dashboard 截图](docs/screenshot-placeholder.png)
-<!-- 有截图后替换 -->
+基于 Web 的 [OpenClaw](https://github.com/nicepkg/openclaw) AI 代理平台性能诊断工具。零外部依赖，开箱即用。
 
 ## 功能特性
 
-- **零依赖** — 仅使用 Python 标准库（`http.server`、`json`、`glob` 等）
-- **单文件部署** — 一个 `.py` 文件包含完整的后端 + 前端
-- **实时 Run 分析** — 查看每次代理运行的时间分解
-- **甘特图时间线** — 纯 CSS 水平时间线，展示推理与工具执行段
-- **推理分段** — 将推理拆解为逐步耗时，并显示 token 吞吐量（tok/s）
-- **工具调用详情** — 显示工具名称、参数摘要和执行时间
-- **Token 用量追踪** — 关联会话文件中的 token 消耗与日志事件
-- **深色主题 UI** — 简洁现代的深色界面，卡片布局，响应式设计
-- **自动刷新** — 可选 30 秒自动刷新，监控实时运行
-- **访问令牌** — 可选 `--token` 参数实现基本访问控制
-- **跨平台** — 支持 Linux、macOS 和 Windows
-- **Python 3.6+** — 无 walrus 操作符，无 match/case，兼容旧版 Python
-- **优雅容错** — 目录不存在、JSON 损坏、日志文件过大、端口冲突等均可正常处理
+### Web 面板 (`openclaw-dashboard.py`)
+
+- **零依赖** — 仅使用 Python 标准库
+- **前后端分离** — 后端 API + 静态文件 (`static/` 目录)
+- **指标卡片** — 双行 KPI 卡片：Run 数、平均耗时、推理占比、Token 速率、错误数、Token 用量、缓存命中率
+- **消息流水线** — 可视化管道：Message Queued → Queue Enqueue → Queue Dequeue → Run → Message Processed
+- **模型调用详情** — 每个 Run 内嵌 LLM 调用明细：输入/输出 Token、缓存、费用、Thinking 预览、工具调用（从 session 文件匹配）
+- **Run 列表** — 分页表格，含耗时、模型、通道、状态
+- **Run 详情** — 可展开甘特图、推理分段、工具参数、Token 汇总
+- **Gzip 压缩** — 自动压缩 >1KB 的响应（节省 72-76%）
+- **ETag 缓存** — 静态文件 304 缓存验证
+- **批量接口** — `/api/dashboard` 一次返回全部数据
+- **骨架屏** — 首屏加载占位，提升感知性能
+- **暗色主题** — GitHub Dark 风格 UI
+- **自动刷新** — 5s 到 5min 可选
+- **访问令牌** — 可选 `--token` 参数
+- **跨平台** — Linux、macOS、Windows
+- **Python 3.6+** — 兼容旧版本
+
+### CLI 工具 (`openclaw-diag.sh`)
+
+- **终端诊断** — 彩色终端输出，Run 时间线
+- **实时跟踪** — `-f` 模式实时流式输出
+- **摘要模式** — `-s` 快速统计概览
+- **工具参数** — 从 session 文件提取工具调用参数
+- **Token 统计** — 每次推理的 Token 用量明细
+- **耗时分布** — 可视化条形图展示推理 vs 工具时间
 
 ## 前置条件：开启 OpenClaw 诊断
 
-Dashboard 读取的诊断日志事件**默认不会生成**。使用前必须在 OpenClaw 配置中开启诊断功能。
-
-编辑 `~/.openclaw/openclaw.json`，添加：
+编辑 `~/.openclaw/openclaw.json`：
 
 ```json
 {
@@ -38,135 +47,73 @@ Dashboard 读取的诊断日志事件**默认不会生成**。使用前必须在
 }
 ```
 
-然后重启 Gateway：
-
-```bash
-openclaw gateway restart
-```
-
-**为什么需要这些配置？**
-- `diagnostics.enabled: true` — 启用诊断事件（`model.usage`、`message.processed`、`session.state` 等）
-- `logging.level: "debug"` — 确保 Run 生命周期事件（`embedded run start/end`、`tool start/end`）写入日志文件。默认的 `info` 级别不会记录这些事件。
-
-**可选：通道定向日志**
-
-如需捕获特定通道的 HTTP 请求详情（如 Telegram 或飞书 API 调用），可添加诊断 flag：
-
-```json
-{
-  "diagnostics": {
-    "enabled": true,
-    "flags": ["telegram.http", "feishu.http"]
-  },
-  "logging": {
-    "level": "debug"
-  }
-}
-```
-
-可用 flag：`telegram.http`、`telegram.*`、`feishu.http`、`feishu.*`、`gateway.*`、`*`（全部）。
-
-> **注意：** 开启诊断并重启 Gateway 后，需要发送几条消息来生成日志数据。在有诊断事件写入之前，Dashboard 会显示"暂无数据"。
+然后重启：`openclaw gateway restart`
 
 ## 快速开始
 
+### Web 面板
+
 ```bash
-# 无需安装，直接运行
 python3 openclaw-dashboard.py
-
-# 或指定选项
-python3 openclaw-dashboard.py --port 8080 --no-browser
+# 打开 http://127.0.0.1:9090
 ```
 
-在浏览器中打开 `http://127.0.0.1:9090`。
+### CLI 工具
 
-## 命令行选项
+```bash
+./openclaw-diag.sh              # 今天的 Run
+./openclaw-diag.sh 2026-03-11   # 指定日期
+./openclaw-diag.sh -f           # 实时跟踪
+./openclaw-diag.sh -l 5         # 最近 5 个 Run
+./openclaw-diag.sh -s           # 仅摘要
+```
 
-| 选项 | 默认值 | 说明 |
+## 命令行参数
+
+| 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--port PORT` | `9090` | HTTP 监听端口 |
-| `--host HOST` | `127.0.0.1` | 绑定地址（`0.0.0.0` 允许远程访问，`::` 支持 IPv6） |
-| `--log-dir DIR` | 自动检测 | OpenClaw 日志目录路径 |
-| `--sessions-dir DIR` | 自动检测 | 会话 JSONL 文件目录 |
-| `--token TOKEN` | *(无)* | 访问令牌（URL 中追加 `?token=xxx`） |
-| `--no-browser` | `false` | 启动时不自动打开浏览器 |
+| `--port PORT` | `9090` | 监听端口 |
+| `--host HOST` | `0.0.0.0` | 绑定地址 |
+| `--log-dir DIR` | 自动检测 | 日志目录 |
+| `--sessions-dir DIR` | 自动检测 | 会话文件目录 |
+| `--token TOKEN` | 无 | 访问令牌 |
+| `--no-browser` | `false` | 不自动打开浏览器 |
 
-### 自动检测顺序
+### 路径自动检测
 
-**日志目录：**
-1. `--log-dir` 参数
-2. `OPENCLAW_LOG_DIR` 环境变量
-3. `/tmp/openclaw/`（Linux 默认）
-4. `~/Library/Logs/openclaw/`（macOS）
-5. `%TEMP%/openclaw/`（Windows）
+**日志目录：** `--log-dir` → `$OPENCLAW_LOG_DIR` → `/tmp/openclaw/` → `~/Library/Logs/openclaw/` → `%TEMP%/openclaw/`
 
-**会话目录：**
-1. `--sessions-dir` 参数
-2. `OPENCLAW_SESSIONS_DIR` 环境变量
-3. `~/.openclaw/agents/*/sessions/`（标准路径）
-4. `$OPENCLAW_STATE_DIR/agents/*/sessions/`（自定义 state 目录）
-
-## 架构
-
-### 数据来源
-
-Dashboard 读取两种 JSONL 文件：
-
-1. **日志文件**（`/tmp/openclaw/openclaw-YYYY-MM-DD.log`）— 包含代理运行的时间戳事件：启动、Prompt 构建、API 调用、工具执行和完成。
-
-2. **会话文件**（`~/.openclaw/agents/*/sessions/*.jsonl`）— 包含消息历史、工具调用参数和 token 用量数据。
-
-### Run 事件链
-
-```
-embedded run start → agent start → [tool start → tool end]* → agent end → run done
-```
-
-推理时间 = 工具执行之间的间隔：
-
-```
-推理 #1 = agent_start → 第一个 tool_start
-推理 #2 = tool_end[0] → tool_start[1]
-...
-推理 #N = 最后一个 tool_end → agent_end
-```
+**会话目录：** `--sessions-dir` → `$OPENCLAW_SESSIONS_DIR` → `~/.openclaw/agents/*/sessions/` → `$OPENCLAW_STATE_DIR/agents/*/sessions/`
 
 ## API 参考
 
 | 端点 | 说明 |
 |------|------|
-| `GET /` | Dashboard HTML 页面（内嵌前端） |
-| `GET /api/dates` | 可用日志日期列表 `["2026-03-11", ...]` |
-| `GET /api/summary?date=YYYY-MM-DD` | 摘要统计：Run 数量、平均耗时、Token 总量、错误数 |
-| `GET /api/runs?date=YYYY-MM-DD` | Run 列表：时间、工具数、状态 |
-| `GET /api/run/<run_id>?date=YYYY-MM-DD` | Run 完整详情：甘特图、推理分段、工具参数、Token 用量 |
+| `GET /` | 面板页面 |
+| `GET /api/dashboard?date=` | **批量接口**：summary + events + runs + errors |
+| `GET /api/dates` | 可用日志日期 |
+| `GET /api/system_info` | 系统信息 |
+| `GET /api/summary?date=` | Run 摘要统计 |
+| `GET /api/events?date=` | 事件摘要 + 流水线统计 |
+| `GET /api/runs?date=&page=&per_page=` | 分页 Run 列表 |
+| `GET /api/run/<id>?date=` | Run 详情（含 model_calls、甘特图、工具） |
+| `GET /api/model_calls?date=` | 全部模型调用记录 |
+| `GET /api/events/errors?date=&severity=&type=` | 错误列表（支持过滤） |
 
-所有 API 返回 `Content-Type: application/json; charset=utf-8`。
+## 模型调用匹配
+
+Session 文件中的模型调用通过以下方式匹配到 Run：
+- **时间范围**：调用时间戳在 Run 的起止时间内
+- **Session ID**：双 ID 匹配（文件名 ID + 内部 ID）
+
+> **注意：** 子代理（waicode 等）的 session 可能是临时的。仅当 session 文件仍然存在时才能显示模型调用。
 
 ## 兼容性
 
-- **Python**：3.6、3.7、3.8、3.9、3.10、3.11、3.12+
-- **操作系统**：Linux、macOS、Windows
-- **浏览器**：所有现代浏览器（Chrome、Firefox、Safari、Edge）
-- **网络**：IPv4 和 IPv6，自动回退
+- **Python**: 3.6+
+- **操作系统**: Linux, macOS, Windows
+- **浏览器**: Chrome, Firefox, Safari, Edge
 
-## CLI 诊断工具
-
-仓库还包含 `openclaw-diag.sh` 命令行诊断脚本：
-
-```bash
-# 分析今日运行
-./openclaw-diag.sh
-
-# 分析指定日期
-./openclaw-diag.sh 2026-03-11
-
-# 分析指定 Run
-./openclaw-diag.sh 2026-03-11 <run_id>
-```
-
-在终端中输出带颜色的表格，显示 Run 时间线、推理分解和工具执行详情。
-
-## 许可证
+## License
 
 [MIT](LICENSE) © 2026 wujiaming88

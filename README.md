@@ -1,31 +1,41 @@
 # OpenClaw Diagnostic Dashboard
 
-A web-based performance diagnostic tool for the [OpenClaw](https://github.com/nicepkg/openclaw) AI agent platform. Single-file Python server with zero external dependencies — just run and explore.
-
-![Dashboard Screenshot](docs/screenshot-placeholder.png)
-<!-- Replace with actual screenshot once available -->
+A web-based performance diagnostic tool for the [OpenClaw](https://github.com/nicepkg/openclaw) AI agent platform. Zero external dependencies — just run and explore.
 
 ## Features
 
-- **Zero Dependencies** — Uses only the Python standard library (`http.server`, `json`, `glob`, etc.)
-- **Single File Deployment** — One `.py` file contains the entire backend + frontend
-- **Real-time Run Analysis** — View every agent run with timing breakdowns
-- **Gantt Chart Timeline** — Pure-CSS horizontal timeline showing inference vs. tool execution segments
-- **Inference Segmentation** — Breaks down inference into per-step durations with token throughput (tok/s)
-- **Tool Call Details** — Shows tool names, argument summaries, and execution times
-- **Token Usage Tracking** — Correlates token consumption from session files with log events
-- **Dark Theme UI** — Clean, modern dark interface with card layout and responsive design
-- **Auto Refresh** — Optional 30-second auto-refresh for monitoring live runs
+### Web Dashboard (`openclaw-dashboard.py`)
+
+- **Zero Dependencies** — Uses only the Python standard library
+- **Separated Frontend** — Backend API + static files (`static/` directory)
+- **Summary Cards** — Two rows of KPI cards: run count, avg duration, inference ratio, token throughput, error count, token usage, cache hit rate
+- **Message Pipeline** — Visual pipeline: Message Queued → Queue Enqueue → Queue Dequeue → Run Execution → Message Processed
+- **Model Call Details** — Per-run LLM call breakdown showing input/output tokens, cache usage, cost, thinking preview, tool calls (embedded in run detail, matched via session files)
+- **Run List** — Paginated run table with timing, model, channel, status
+- **Run Detail** — Expandable Gantt chart, inference segments, tool call arguments, token summary
+- **Gzip Compression** — Automatic gzip for responses >1KB (72-76% size reduction)
+- **ETag Caching** — Static files support ETag + 304 Not Modified
+- **Batch API** — Single `/api/dashboard` endpoint returns summary + events + runs in one request
+- **Skeleton Loading** — Loading placeholders for instant perceived performance
+- **Dark Theme** — GitHub-dark inspired UI
+- **Auto Refresh** — Configurable 5s to 5min intervals
 - **Access Token** — Optional `--token` flag for basic access control
-- **Cross-Platform** — Runs on Linux, macOS, and Windows
-- **Python 3.6+** — No walrus operators, no match/case, no bleeding-edge syntax
-- **Graceful Error Handling** — Survives missing directories, corrupt JSON, huge log files, and port conflicts
+- **Cross-Platform** — Linux, macOS, Windows
+- **Python 3.6+** — No modern-only syntax
+- **Graceful Errors** — Survives missing dirs, corrupt JSON, huge logs, port conflicts
+
+### CLI Tool (`openclaw-diag.sh`)
+
+- **Terminal Diagnostic** — Colored terminal output with run timelines
+- **Live Follow Mode** — Real-time log streaming (`-f`)
+- **Summary Mode** — Quick stats overview (`-s`)
+- **Tool Parameters** — Extracts tool call arguments from session files
+- **Token Tracking** — Per-inference token usage breakdown
+- **Duration Breakdown** — Visual bar charts for inference vs. tool time
 
 ## Prerequisites: Enable OpenClaw Diagnostics
 
-The dashboard reads diagnostic log events that are **not emitted by default**. You must enable diagnostics in your OpenClaw configuration before the dashboard can display any data.
-
-Edit `~/.openclaw/openclaw.json` and add:
+Edit `~/.openclaw/openclaw.json`:
 
 ```json
 {
@@ -38,134 +48,93 @@ Edit `~/.openclaw/openclaw.json` and add:
 }
 ```
 
-Then restart the Gateway:
+Then restart: `openclaw gateway restart`
 
-```bash
-openclaw gateway restart
-```
-
-**Why is this needed?**
-- `diagnostics.enabled: true` — Enables diagnostic events (`model.usage`, `message.processed`, `session.state`, etc.)
-- `logging.level: "debug"` — Ensures run lifecycle events (`embedded run start/end`, `tool start/end`) are written to the log file. At the default `info` level, these events are not recorded.
-
-**Optional: Targeted channel logs**
-
-To also capture channel-specific HTTP details (e.g., Telegram or Feishu API calls), add diagnostic flags:
-
-```json
-{
-  "diagnostics": {
-    "enabled": true,
-    "flags": ["telegram.http", "feishu.http"]
-  },
-  "logging": {
-    "level": "debug"
-  }
-}
-```
-
-Available flags: `telegram.http`, `telegram.*`, `feishu.http`, `feishu.*`, `gateway.*`, `*` (all).
-
-> **Note:** After enabling diagnostics and restarting the Gateway, send a few messages to generate log data. The dashboard will show "No data" until diagnostic events are recorded.
+- `diagnostics.enabled: true` — Enables diagnostic events
+- `logging.level: "debug"` — Records run lifecycle events
 
 ## Quick Start
 
-```bash
-# No install needed — just run it
-python3 openclaw-dashboard.py
+### Web Dashboard
 
-# Or specify options
-python3 openclaw-dashboard.py --port 8080 --no-browser
+```bash
+python3 openclaw-dashboard.py
+# Open http://127.0.0.1:9090
 ```
 
-Open `http://127.0.0.1:9090` in your browser.
+### CLI Tool
 
-## Command Line Options
+```bash
+./openclaw-diag.sh              # Today's runs
+./openclaw-diag.sh 2026-03-11   # Specific date
+./openclaw-diag.sh -f           # Live follow mode
+./openclaw-diag.sh -l 5         # Last 5 runs
+./openclaw-diag.sh -s           # Summary only
+```
+
+## Command Line Options (Web Dashboard)
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--port PORT` | `9090` | HTTP server listen port |
-| `--host HOST` | `127.0.0.1` | Bind address (`0.0.0.0` for remote access, `::` for IPv6) |
-| `--log-dir DIR` | auto-detect | OpenClaw log directory path |
-| `--sessions-dir DIR` | auto-detect | Session JSONL files directory |
-| `--token TOKEN` | *(none)* | Access token (append `?token=xxx` to URL) |
-| `--no-browser` | `false` | Don't auto-open browser on start |
+| `--port PORT` | `9090` | Listen port |
+| `--host HOST` | `0.0.0.0` | Bind address |
+| `--log-dir DIR` | auto-detect | Log directory |
+| `--sessions-dir DIR` | auto-detect | Session files directory |
+| `--token TOKEN` | *(none)* | Access token |
+| `--no-browser` | `false` | Don't auto-open browser |
 
 ### Auto-Detection Order
 
-**Log directory:**
-1. `--log-dir` argument
-2. `OPENCLAW_LOG_DIR` environment variable
-3. `/tmp/openclaw/` (Linux default)
-4. `~/Library/Logs/openclaw/` (macOS)
-5. `%TEMP%/openclaw/` (Windows)
+**Log directory:** `--log-dir` → `$OPENCLAW_LOG_DIR` → `/tmp/openclaw/` → `~/Library/Logs/openclaw/` → `%TEMP%/openclaw/`
 
-**Session directory:**
-1. `--sessions-dir` argument
-2. `OPENCLAW_SESSIONS_DIR` environment variable
-3. `~/.openclaw/agents/*/sessions/` (standard path)
-4. `$OPENCLAW_STATE_DIR/agents/*/sessions/` (custom state dir)
-
-## Architecture
-
-### Data Sources
-
-The dashboard reads two types of JSONL files:
-
-1. **Log files** (`/tmp/openclaw/openclaw-YYYY-MM-DD.log`) — Contains timestamped events for agent runs: start, prompt build, API calls, tool execution, and completion.
-
-2. **Session files** (`~/.openclaw/agents/*/sessions/*.jsonl`) — Contains message history with tool call arguments and token usage data.
-
-### Run Event Chain
-
-```
-embedded run start → agent start → [tool start → tool end]* → agent end → run done
-```
-
-Inference time is computed as the gaps between tool executions:
-
-```
-Inference #1 = agent_start → first tool_start
-Inference #2 = tool_end[0] → tool_start[1]
-...
-Inference #N = last tool_end → agent_end
-```
+**Session directory:** `--sessions-dir` → `$OPENCLAW_SESSIONS_DIR` → `~/.openclaw/agents/*/sessions/` → `$OPENCLAW_STATE_DIR/agents/*/sessions/`
 
 ## API Reference
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /` | Dashboard HTML page (embedded frontend) |
-| `GET /api/dates` | List available log dates `["2026-03-11", ...]` |
-| `GET /api/summary?date=YYYY-MM-DD` | Summary stats: run count, avg duration, token totals, error count |
-| `GET /api/runs?date=YYYY-MM-DD` | Run list with timing, tool count, status |
-| `GET /api/run/<run_id>?date=YYYY-MM-DD` | Full run detail: gantt data, inference segments, tool args, token usage |
+| `GET /` | Dashboard page |
+| `GET /api/dashboard?date=` | **Batch**: summary + events + runs + errors |
+| `GET /api/dates` | Available log dates |
+| `GET /api/system_info` | System info (Python, memory, config, model_calls_total) |
+| `GET /api/summary?date=` | Run summary stats |
+| `GET /api/events?date=` | Event summary + message pipeline stats |
+| `GET /api/runs?date=&page=&per_page=` | Paginated run list |
+| `GET /api/run/<id>?date=` | Run detail with model_calls, gantt, tools |
+| `GET /api/model_calls?date=&page=&per_page=` | All model calls (from session files) |
+| `GET /api/events/errors?date=&severity=&type=` | Error list with filtering |
 
-All API endpoints return `Content-Type: application/json; charset=utf-8`.
+All responses: `Content-Type: application/json; charset=utf-8`, gzip supported.
+
+## Architecture
+
+### Data Sources
+
+1. **Log files** (`/tmp/openclaw/openclaw-YYYY-MM-DD.log`) — Run events, timing, tool execution
+2. **Session files** (`~/.openclaw/agents/*/sessions/*.jsonl`) — Model call details, token usage, tool arguments
+
+### Model Call Matching
+
+Model calls from session files are matched to runs by:
+- Time range: model call timestamp falls within run start/end
+- Session ID: dual matching (file-name ID + internal ID) to handle ID mismatches
+
+> **Note:** Subagent sessions (waicode, etc.) may be ephemeral. Model calls are only available for runs whose session files still exist.
+
+### Performance Optimizations
+
+- Batch API reduces 3 HTTP requests to 1
+- Gzip: app.js 28KB→8KB, style.css 13KB→3KB, API ~76% reduction
+- ETag + 304 for static files
+- Long cache (24h) for versioned static assets
+- Critical CSS inlined, script deferred, resources preloaded
+- Backend caching with mtime-based invalidation
 
 ## Compatibility
 
-- **Python**: 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12+
+- **Python**: 3.6+
 - **OS**: Linux, macOS, Windows
-- **Browser**: Any modern browser (Chrome, Firefox, Safari, Edge)
-- **Network**: IPv4 and IPv6, with automatic fallback
-
-## CLI Diagnostic Tool
-
-The repository also includes `openclaw-diag.sh`, a command-line diagnostic script:
-
-```bash
-# Analyze today's runs
-./openclaw-diag.sh
-
-# Analyze a specific date
-./openclaw-diag.sh 2026-03-11
-
-# Analyze a specific run
-./openclaw-diag.sh 2026-03-11 <run_id>
-```
-
-This produces terminal-friendly output with colored tables showing run timelines, inference breakdowns, and tool execution details.
+- **Browser**: Chrome, Firefox, Safari, Edge
 
 ## License
 

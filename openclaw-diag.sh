@@ -1,11 +1,22 @@
 #!/bin/bash
-# OpenClaw 诊断日志解析工具
+# OpenClaw 诊断日志解析工具 v2.1
 # 用法:
 #   ./openclaw-diag.sh              # 解析今天的日志
 #   ./openclaw-diag.sh 2026-03-11   # 解析指定日期
 #   ./openclaw-diag.sh -f           # 实时跟踪模式
 #   ./openclaw-diag.sh -l 5         # 只看最近5个run
 #   ./openclaw-diag.sh -s           # 只看摘要统计
+#
+# 功能:
+#   - 解析 OpenClaw 诊断日志，展示 Run 时间线
+#   - 从 session 文件提取工具调用参数和 Token 用量
+#   - 计算推理分段耗时和 Token 速率
+#   - 实时跟踪模式 (-f) 流式输出
+#   - 摘要模式 (-s) 快速统计
+#
+# 数据源:
+#   - 日志文件: /tmp/openclaw/openclaw-YYYY-MM-DD.log
+#   - 会话文件: ~/.openclaw/agents/*/sessions/*.jsonl
 
 set -euo pipefail
 
