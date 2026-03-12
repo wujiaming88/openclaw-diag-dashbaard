@@ -2120,6 +2120,14 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     """多线程 HTTP 服务器，避免单请求阻塞"""
     daemon_threads = True
 
+    def handle_error(self, request, client_address):
+        """抑制 BrokenPipeError 的错误输出"""
+        import sys as _sys
+        exc = _sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return  # 客户端断开，静默忽略
+        super(ThreadingHTTPServer, self).handle_error(request, client_address)
+
 
 class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP 请求处理器"""
@@ -2440,9 +2448,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 })
             else:
                 self._send_json({"error": "not found"}, 404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # 客户端已断开
         except Exception as e:
             traceback.print_exc()
-            self._send_json({"error": str(e)}, 500)
+            try:
+                self._send_json({"error": str(e)}, 500)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
 
 
 # ============================================================
