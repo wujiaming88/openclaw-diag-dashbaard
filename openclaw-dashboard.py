@@ -1398,10 +1398,9 @@ def get_system_info(data_store, config_path, config_data):
     info["sessions_dir_count"] = sessions_dir_count
     info["session_file_count"] = session_file_count
 
-    # 模型调用总数 (触发懒加载)
-    data_store._get_tool_data()
-    model_calls = data_store._model_calls or []
-    info["model_calls_total"] = len(model_calls)
+    # 模型调用总数 (不触发懒加载，避免阻塞首次请求)
+    model_calls = data_store._model_calls if data_store._tool_data_loaded else None
+    info["model_calls_total"] = len(model_calls) if model_calls else -1
 
     return info
 
@@ -1424,6 +1423,11 @@ class DataStore(object):
         self._tool_results = None
         self._tool_data_loaded = False
         self._lock = threading.Lock()
+
+    def start_preload(self):
+        """后台线程预加载 session 数据，不阻塞 HTTP 服务"""
+        t = threading.Thread(target=self._get_tool_data, daemon=True)
+        t.start()
 
     def _get_tool_data(self):
         if not self._tool_data_loaded:
@@ -2467,6 +2471,7 @@ def main():
 
     # 初始化数据存储
     store = DataStore(log_dir, sessions_dirs)
+    store.start_preload()  # 后台预加载 session 数据
     DashboardHandler.data_store = store
     DashboardHandler.access_token = args.token if args.token else None
     DashboardHandler.config_path = config_path

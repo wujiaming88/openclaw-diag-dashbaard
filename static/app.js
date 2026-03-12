@@ -182,7 +182,7 @@ function renderSystemInfo(info) {
     ['日志文件数', info.log_file_count],
     ['会话目录数', info.sessions_dir_count],
     ['会话文件数', info.session_file_count],
-    ['模型调用数', info.model_calls_total || 0],
+    ['模型调用数', (info.model_calls_total >= 0) ? info.model_calls_total : '加载中...'],
   ];
   items.forEach(function (it) {
     html += '<div class="si-item"><span class="si-label">' + escHtml(it[0]) + '</span><span class="si-value">' + escHtml(String(it[1] || '-')) + '</span></div>';
