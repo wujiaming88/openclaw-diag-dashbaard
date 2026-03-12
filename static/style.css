@@ -218,16 +218,19 @@ tr.clickable:hover td{background:var(--hover)}
 .error-source{color:var(--text2);font-size:11px;font-family:monospace}
 .model-calls-scroll,.errors-scroll{max-height:500px;overflow-y:auto}
 
-/* 可折叠内容块 */
-.collapsible-content{max-height:100px;overflow:hidden;position:relative;cursor:pointer;margin-top:4px;transition:max-height .3s ease}
-.collapsible-content.expanded{max-height:none}
-.collapsible-content:not(.expanded)::after{content:'点击展开...';position:absolute;bottom:0;left:0;right:0;height:30px;background:linear-gradient(transparent,var(--bg));text-align:center;line-height:30px;font-size:11px;color:var(--accent)}
-.collapsible-content pre{margin:0;white-space:pre-wrap;word-break:break-all;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:12px;background:var(--bg);padding:8px;border-radius:4px;border:1px solid var(--border);color:var(--text2)}
+/* 折叠/展开内容块 */
+.collapsible-content{max-height:0;overflow:hidden;margin-top:4px;transition:max-height .3s ease;border-radius:6px}
+.collapsible-content.expanded{max-height:8000px;overflow:visible}
+.collapsible-content pre{margin:0;white-space:pre-wrap;word-break:break-all;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:12px;background:var(--bg);padding:10px 12px;border-radius:6px;border:1px solid var(--border);color:var(--text2);line-height:1.6}
+.collapse-toggle{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--accent);cursor:pointer;user-select:none;transition:all .15s}
+.collapse-toggle:hover{background:var(--bg3);border-color:var(--accent)}
+.collapse-toggle.open{background:var(--bg3);border-color:var(--accent)}
 
 /* 工具执行结果 */
-.tool-result{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:12px;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--text2)}
+.tool-result{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:12px;max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--text2);line-height:1.6}
 .tool-result.error{border-color:var(--red);color:var(--red)}
 
 /* 模型调用内容块 */
-.mc-content-block{margin:6px 0;padding:4px 0;border-bottom:1px solid var(--border)}
+.mc-content-block{margin:8px 0;padding:8px 0;border-bottom:1px solid var(--border)}
 .mc-content-block:last-child{border-bottom:none}
+.mc-content-block strong{font-size:12px;display:block;margin-bottom:4px}
