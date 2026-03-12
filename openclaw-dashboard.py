@@ -40,7 +40,7 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 
 # ============================================================
@@ -737,13 +737,15 @@ def parse_session_files(sessions_dirs):
     """解析会话文件，建立 toolCallId -> {arguments, usage} 映射
     同时收集纯文本回复（无 toolCall）的 usage，按 timestamp 索引
     同时收集模型调用记录列表 (每次 assistant 消息 = 一次调用)
-    返回: (tool_data, text_reply_usage, model_calls)
+    同时收集 toolResult 映射 (toolCallId -> result)
+    返回: (tool_data, text_reply_usage, model_calls, tool_results)
     """
-    tool_data = {}  # toolCallId -> {tool, arguments_raw, arguments_summary, usage}
+    tool_data = {}  # toolCallId -> {tool, arguments_raw, arguments_summary, arguments_full, usage}
     text_reply_usage = []  # [(timestamp_str, usage_dict)]
     model_calls = []  # 每次 assistant 消息的详细调用记录
+    tool_results = {}  # toolCallId -> {text, text_preview, isError}
     if not sessions_dirs:
-        return tool_data, text_reply_usage, model_calls
+        return tool_data, text_reply_usage, model_calls, tool_results
     files = []
     for d in sessions_dirs:
         pattern = os.path.join(d, "*.jsonl")
@@ -766,6 +768,10 @@ def parse_session_files(sessions_dirs):
             if first_obj.get("type") == "session":
                 internal_session_id = first_obj.get("id", "")
             break
+
+        # 跟踪上一条 user 消息 (用于 prompt)
+        last_user_text = ""
+
         for line in lines:
             line = line.strip()
             if not line:
@@ -779,6 +785,43 @@ def parse_session_files(sessions_dirs):
             msg = obj.get("message", {})
             if not isinstance(msg, dict):
                 continue
+
+            # 收集 toolResult 消息
+            if msg.get("role") == "toolResult":
+                tc_id = msg.get("toolCallId", "")
+                if tc_id:
+                    is_error = msg.get("isError", False)
+                    result_text = ""
+                    result_content = msg.get("content", [])
+                    if isinstance(result_content, list):
+                        for item in result_content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                result_text += item.get("text", "")
+                    elif isinstance(result_content, str):
+                        result_text = result_content
+                    tool_results[tc_id] = {
+                        "text": result_text[:2000],
+                        "text_preview": result_text[:200],
+                        "isError": is_error,
+                    }
+                continue
+
+            # 跟踪 user 消息
+            if msg.get("role") == "user":
+                user_content = msg.get("content", [])
+                user_text = ""
+                if isinstance(user_content, list):
+                    for item in user_content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            user_text += item.get("text", "")
+                        elif isinstance(item, str):
+                            user_text += item
+                elif isinstance(user_content, str):
+                    user_text = user_content
+                if user_text:
+                    last_user_text = user_text
+                continue
+
             if msg.get("role") != "assistant":
                 continue
             model = msg.get("model", "")
@@ -801,14 +844,31 @@ def parse_session_files(sessions_dirs):
                 tc_name = item.get("name", "")
                 tc_args_raw = item.get("arguments", "{}")
                 if isinstance(tc_args_raw, dict):
-                    pass
-                elif not isinstance(tc_args_raw, str):
+                    args_dict = tc_args_raw
+                elif isinstance(tc_args_raw, str):
+                    try:
+                        args_dict = json.loads(tc_args_raw)
+                    except (json.JSONDecodeError, ValueError):
+                        args_dict = {}
+                else:
                     tc_args_raw = str(tc_args_raw)
+                    args_dict = {}
                 summary = summarize_tool_args(tc_name, tc_args_raw)
+                # 构建 arguments_full (限制大内容)
+                args_full = {}
+                if isinstance(args_dict, dict):
+                    for ak, av in args_dict.items():
+                        if ak == "content" and isinstance(av, str) and len(av) > 1000:
+                            args_full[ak] = av[:1000] + "... (%d chars)" % len(av)
+                        elif isinstance(av, str) and len(av) > 2000:
+                            args_full[ak] = av[:2000] + "... (%d chars)" % len(av)
+                        else:
+                            args_full[ak] = av
                 tool_data[tc_id] = {
                     "tool": tc_name,
                     "arguments_raw": tc_args_raw,
                     "arguments_summary": summary,
+                    "arguments_full": args_full,
                     "usage": usage,
                     "timestamp": timestamp,
                 }
@@ -818,6 +878,7 @@ def parse_session_files(sessions_dirs):
                     "name": tc_name,
                     "id": tc_id,
                     "args_summary": args_short,
+                    "args_full": args_full,
                 })
             # 没有 toolCall 的 assistant 消息 = 纯文本回复
             if not has_tool_call and usage and timestamp:
@@ -829,11 +890,13 @@ def parse_session_files(sessions_dirs):
             stop_reason = msg.get("stopReason", "")
             cost_data = usage.get("cost", {}) if isinstance(usage, dict) else {}
 
-            # content_summary
+            # content_summary (包含完整内容)
             has_thinking = False
             thinking_preview = ""
+            thinking_full = ""
             has_text = False
             text_preview = ""
+            text_full = ""
             for item in content:
                 if not isinstance(item, dict):
                     continue
@@ -843,11 +906,29 @@ def parse_session_files(sessions_dirs):
                     tk = item.get("thinking", "")
                     if tk and not thinking_preview:
                         thinking_preview = tk[:100]
+                    if tk:
+                        thinking_full += tk
                 elif itype == "text":
                     has_text = True
                     tx = item.get("text", "")
                     if tx and not text_preview:
                         text_preview = tx[:200]
+                    if tx:
+                        text_full += tx
+            # 限制完整内容大小
+            if len(thinking_full) > 5000:
+                thinking_full = thinking_full[:5000] + "... (%d chars)" % len(thinking_full)
+            if len(text_full) > 3000:
+                text_full = text_full[:3000] + "... (%d chars)" % len(text_full)
+
+            # 构建 prompt (上一条 user 消息)
+            prompt_data = {}
+            if last_user_text:
+                prompt_data = {
+                    "role": "user",
+                    "text": last_user_text[:3000],
+                    "text_preview": last_user_text[:200],
+                }
 
             call_record = {
                 "timestamp": timestamp,
@@ -857,6 +938,7 @@ def parse_session_files(sessions_dirs):
                 "provider": provider,
                 "api": api_name,
                 "stop_reason": stop_reason,
+                "prompt": prompt_data,
                 "usage": {
                     "input": usage.get("input", 0) if isinstance(usage, dict) else 0,
                     "output": usage.get("output", 0) if isinstance(usage, dict) else 0,
@@ -872,8 +954,10 @@ def parse_session_files(sessions_dirs):
                 "content_summary": {
                     "has_thinking": has_thinking,
                     "thinking_preview": thinking_preview,
+                    "thinking_full": thinking_full,
                     "has_text": has_text,
                     "text_preview": text_preview,
+                    "text_full": text_full,
                     "tool_calls": tool_call_list,
                 },
             }
@@ -881,7 +965,7 @@ def parse_session_files(sessions_dirs):
 
     # Sort model_calls by timestamp descending
     model_calls.sort(key=lambda c: c.get("timestamp", ""), reverse=True)
-    return tool_data, text_reply_usage, model_calls
+    return tool_data, text_reply_usage, model_calls, tool_results
 
 
 def summarize_tool_args(tool_name, args_raw):
@@ -1337,6 +1421,7 @@ class DataStore(object):
         self._tool_data = None
         self._text_reply_usage = None
         self._model_calls = None
+        self._tool_results = None
         self._tool_data_loaded = False
         self._lock = threading.Lock()
 
@@ -1344,13 +1429,17 @@ class DataStore(object):
         if not self._tool_data_loaded:
             with self._lock:
                 if not self._tool_data_loaded:
-                    self._tool_data, self._text_reply_usage, self._model_calls = parse_session_files(self.sessions_dirs)
+                    self._tool_data, self._text_reply_usage, self._model_calls, self._tool_results = parse_session_files(self.sessions_dirs)
                     self._tool_data_loaded = True
         return self._tool_data or {}
 
     def _get_text_reply_usage(self):
         self._get_tool_data()
         return self._text_reply_usage or []
+
+    def _get_tool_results(self):
+        self._get_tool_data()
+        return self._tool_results or {}
 
     def get_model_calls(self, date=None, page=1, per_page=50):
         """返回模型调用记录列表 (分页)，可按日期过滤"""
@@ -1817,6 +1906,7 @@ class DataStore(object):
             return None
         tool_data = self._get_tool_data()
         text_reply_usage = self._get_text_reply_usage()
+        tool_results = self._get_tool_results()
 
         infer_segs = compute_infer_segments(run)
         run_start_str = run["start"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("start") else ""
@@ -1893,6 +1983,8 @@ class DataStore(object):
                 "duration_ms": dur,
                 "start": start_str,
                 "arguments_summary": td.get("arguments_summary", ""),
+                "arguments_full": td.get("arguments_full", {}),
+                "result": tool_results.get(tc_id, {}),
                 "usage": {
                     "input": usage.get("input", 0),
                     "output": usage.get("output", 0),

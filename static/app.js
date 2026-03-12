@@ -510,12 +510,14 @@ function renderRunDetail(d, el) {
   // 工具调用
   html += '<div class="detail-section"><h4>工具调用 (' + d.tool_count + ')</h4>';
   if (d.tools && d.tools.length > 0) {
-    html += '<table class="detail-table"><thead><tr><th>工具</th><th>参数</th><th>耗时</th></tr></thead><tbody>';
-    d.tools.forEach(function (t) {
+    html += '<table class="detail-table"><thead><tr><th>工具</th><th>参数</th><th>耗时</th><th>结果</th></tr></thead><tbody>';
+    d.tools.forEach(function (t, ti) {
       var dc = speedClass(t.duration_ms);
       var argText = t.arguments_summary || '';
       var lines = argText.split('\n');
       var needCollapse = lines.length > 4;
+      var hasArgsFull = t.arguments_full && Object.keys(t.arguments_full).length > 0;
+      var hasResult = t.result && (t.result.text || t.result.text_preview);
       html += '<tr><td><strong>' + escHtml(t.tool) + '</strong></td><td class="tool-args">';
       if (argText) {
         html += '<div class="tool-args-wrap' + (needCollapse ? ' collapsed' : '') + '">';
@@ -523,7 +525,24 @@ function renderRunDetail(d, el) {
         if (needCollapse) html += '<span class="tool-args-toggle" onclick="toggleArgs(this)">▼ 展开 (' + lines.length + ' 行)</span>';
         html += '</div>';
       }
-      html += '</td><td class="' + dc + '">' + fmtMs(t.duration_ms) + '</td></tr>';
+      if (hasArgsFull) {
+        html += '<div style="margin-top:4px"><span class="tool-args-toggle" onclick="toggleCollapsible(\'tool-args-full-' + ti + '\')">📋 完整参数 JSON</span>';
+        html += '<div class="collapsible-content" id="tool-args-full-' + ti + '"><pre>' + escHtml(JSON.stringify(t.arguments_full, null, 2)) + '</pre></div></div>';
+      }
+      html += '</td><td class="' + dc + '">' + fmtMs(t.duration_ms) + '</td>';
+      // 结果列
+      html += '<td>';
+      if (hasResult) {
+        var isErr = t.result.isError;
+        var resultIcon = isErr ? '❌' : '✅';
+        var resultPreview = t.result.text_preview || '';
+        html += resultIcon + ' <span class="tool-args-toggle" onclick="toggleCollapsible(\'tool-result-' + ti + '\')">[展开查看]</span>';
+        html += '<div class="collapsible-content" id="tool-result-' + ti + '">';
+        html += '<div class="tool-result' + (isErr ? ' error' : '') + '">' + escHtml(t.result.text || resultPreview) + '</div></div>';
+      } else {
+        html += '<span style="color:var(--text2)">-</span>';
+      }
+      html += '</td></tr>';
     });
     html += '</tbody></table>';
   } else {
@@ -591,12 +610,31 @@ function renderRunDetail(d, el) {
 
       // 展开详情
       var cs = mc.content_summary || {};
+      var prompt = mc.prompt || {};
       html += '<tr><td colspan="8" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
-      if (cs.has_thinking && cs.thinking_preview) {
-        html += '<div><strong>💭 Thinking:</strong><pre>' + escHtml(cs.thinking_preview) + '...</pre></div>';
+      // Prompt (用户输入)
+      if (prompt.text) {
+        html += '<div class="mc-content-block"><strong>📝 Prompt (用户输入):</strong>';
+        var promptText = prompt.text || '';
+        var promptNeedCollapse = promptText.length > 300;
+        html += '<div class="collapsible-content' + (promptNeedCollapse ? '' : ' expanded') + '" onclick="this.classList.toggle(\'expanded\')">';
+        html += '<pre>' + escHtml(promptText) + '</pre></div></div>';
       }
-      if (cs.has_text && cs.text_preview) {
-        html += '<div><strong>💬 Output:</strong><pre>' + escHtml(cs.text_preview) + '</pre></div>';
+      // Thinking
+      if (cs.has_thinking) {
+        var thinkText = cs.thinking_full || cs.thinking_preview || '';
+        html += '<div class="mc-content-block"><strong>💭 Thinking:</strong>';
+        var thinkCollapse = thinkText.length > 300;
+        html += '<div class="collapsible-content' + (thinkCollapse ? '' : ' expanded') + '" onclick="this.classList.toggle(\'expanded\')">';
+        html += '<pre>' + escHtml(thinkText) + '</pre></div></div>';
+      }
+      // Output
+      if (cs.has_text) {
+        var outText = cs.text_full || cs.text_preview || '';
+        html += '<div class="mc-content-block"><strong>💬 Output:</strong>';
+        var outCollapse = outText.length > 300;
+        html += '<div class="collapsible-content' + (outCollapse ? '' : ' expanded') + '" onclick="this.classList.toggle(\'expanded\')">';
+        html += '<pre>' + escHtml(outText) + '</pre></div></div>';
       }
       if (cs.tool_calls && cs.tool_calls.length > 0) {
         html += '<div class="tool-list"><strong>🔧 工具:</strong> ';
@@ -693,6 +731,11 @@ window.toggleArgs = function (el) {
     wrap.classList.add('collapsed');
     el.textContent = '▼ 展开';
   }
+};
+
+window.toggleCollapsible = function (id) {
+  var el = document.getElementById(id);
+  if (el) el.classList.toggle('expanded');
 };
 
 window.toggleRun = function (tr) {
