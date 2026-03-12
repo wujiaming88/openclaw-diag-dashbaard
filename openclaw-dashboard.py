@@ -750,8 +750,11 @@ def parse_session_files(sessions_dirs):
         files.extend(glob.glob(pattern))
     for fpath in files:
         lines = safe_read_lines(fpath, max_lines=20000)
-        # 先找 session_id (第一行 type=session)
-        file_session_id = ""
+        # 从文件名提取 session_id (文件名格式: {session_id}.jsonl 或 {session_id}-topic-xxx.jsonl)
+        fname = os.path.basename(fpath)
+        fname_session_id = fname.split(".")[0].split("-topic-")[0] if fname else ""
+        # 从文件内容第一行获取内部 session_id
+        internal_session_id = ""
         for line in lines:
             line_s = line.strip()
             if not line_s:
@@ -761,7 +764,7 @@ def parse_session_files(sessions_dirs):
             except (json.JSONDecodeError, ValueError):
                 continue
             if first_obj.get("type") == "session":
-                file_session_id = first_obj.get("id", "")
+                internal_session_id = first_obj.get("id", "")
             break
         for line in lines:
             line = line.strip()
@@ -848,7 +851,8 @@ def parse_session_files(sessions_dirs):
 
             call_record = {
                 "timestamp": timestamp,
-                "session_id": file_session_id,
+                "session_id": internal_session_id,
+                "session_id_file": fname_session_id,
                 "model": model,
                 "provider": provider,
                 "api": api_name,
@@ -1309,6 +1313,11 @@ def get_system_info(data_store, config_path, config_data):
         session_file_count += len(glob.glob(os.path.join(d, "*.jsonl")))
     info["sessions_dir_count"] = sessions_dir_count
     info["session_file_count"] = session_file_count
+
+    # 模型调用总数 (触发懒加载)
+    data_store._get_tool_data()
+    model_calls = data_store._model_calls or []
+    info["model_calls_total"] = len(model_calls)
 
     return info
 
@@ -1938,9 +1947,13 @@ class DataStore(object):
                 # 比较 ISO 时间 (截取到秒)
                 mc_ts_short = mc_ts[:19]
                 if mc_ts_short >= run_start_str and mc_ts_short <= run_end_str:
-                    # 如果有 session_id 则额外匹配
-                    if session_id and mc.get("session_id") and mc["session_id"] != session_id:
-                        continue
+                    # session_id 匹配: 比对内部ID和文件名ID
+                    if session_id:
+                        mc_sid = mc.get("session_id", "")
+                        mc_sid_file = mc.get("session_id_file", "")
+                        if mc_sid and mc_sid_file:
+                            if mc_sid != session_id and mc_sid_file != session_id:
+                                continue
                     run_model_calls.append(mc)
             # 按时间正序
             run_model_calls.sort(key=lambda c: c.get("timestamp", ""))

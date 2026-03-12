@@ -182,6 +182,7 @@ function renderSystemInfo(info) {
     ['日志文件数', info.log_file_count],
     ['会话目录数', info.sessions_dir_count],
     ['会话文件数', info.session_file_count],
+    ['模型调用数', info.model_calls_total || 0],
   ];
   items.forEach(function (it) {
     html += '<div class="si-item"><span class="si-label">' + escHtml(it[0]) + '</span><span class="si-value">' + escHtml(String(it[1] || '-')) + '</span></div>';
@@ -333,81 +334,6 @@ function renderPipeline(data) {
     }
     html += '</div>';
   }
-  body.innerHTML = html;
-}
-
-// ============================================================
-// 渲染 — 模型调用记录
-// ============================================================
-function renderModelCalls(data) {
-  var sec = $('#modelCallsSection');
-  var body = $('#modelCallsBody');
-  var badge = $('#modelCallsCount');
-  if (!sec || !body) return;
-  if (!data || !data.model_calls || data.model_calls.length === 0) {
-    sec.style.display = 'none';
-    return;
-  }
-  sec.style.display = 'block';
-  if (badge) badge.textContent = data.total || data.model_calls.length;
-
-  var calls = data.model_calls;
-  var html = '<div class="model-calls-scroll"><table class="model-calls-table"><thead><tr>';
-  html += '<th>时间</th><th>模型</th><th>Provider</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>停止原因</th><th></th>';
-  html += '</tr></thead><tbody>';
-  calls.forEach(function (c, idx) {
-    var ts = c.timestamp || '';
-    // 提取时间部分
-    if (ts.indexOf('T') > -1) {
-      ts = ts.split('T')[1] || ts;
-      if (ts.length > 12) ts = ts.substring(0, 12);
-    }
-    var model = shortModel(c.model || '');
-    var provider = c.provider || '';
-    var u = c.usage || {};
-    var cost = c.cost || {};
-    var stopCls = (c.stop_reason === 'stop') ? 'stop' : (c.stop_reason === 'toolUse' ? 'toolUse' : '');
-    var costStr = cost.total ? ('$' + cost.total.toFixed(6)) : '-';
-    var cacheStr = fmtTok(u.cacheRead || 0);
-    if ((u.cacheRead || 0) > 0 && (u.input || 0) > 0) {
-      var hitPct = Math.round((u.cacheRead) / (u.cacheRead + u.input) * 100);
-      cacheStr += ' (' + hitPct + '%)';
-    }
-
-    html += '<tr onclick="toggleModelCallDetail(' + idx + ')" style="cursor:pointer">';
-    html += '<td>' + escHtml(ts) + '</td>';
-    html += '<td class="model-name">' + escHtml(model) + '</td>';
-    html += '<td>' + escHtml(provider) + '</td>';
-    html += '<td>' + fmtTok(u.input || 0) + '</td>';
-    html += '<td>' + fmtTok(u.output || 0) + '</td>';
-    html += '<td>' + cacheStr + '</td>';
-    html += '<td class="cost">' + costStr + '</td>';
-    html += '<td><span class="stop-tag ' + stopCls + '">' + escHtml(c.stop_reason || '-') + '</span></td>';
-    html += '<td style="font-size:11px;color:var(--text2)">▶</td>';
-    html += '</tr>';
-
-    // 展开详情行
-    var cs = c.content_summary || {};
-    html += '<tr><td colspan="9" style="padding:0"><div class="mc-detail" id="mc-detail-' + idx + '">';
-    if (cs.has_thinking && cs.thinking_preview) {
-      html += '<div><strong>💭 Thinking:</strong><pre>' + escHtml(cs.thinking_preview) + '...</pre></div>';
-    }
-    if (cs.has_text && cs.text_preview) {
-      html += '<div><strong>💬 Text:</strong><pre>' + escHtml(cs.text_preview) + '</pre></div>';
-    }
-    if (cs.tool_calls && cs.tool_calls.length > 0) {
-      html += '<div class="tool-list"><strong>🔧 工具调用:</strong> ';
-      cs.tool_calls.forEach(function (tc) {
-        html += '<span class="tool-item">' + escHtml(tc.name) + (tc.args_summary ? ': ' + escHtml(tc.args_summary) : '') + '</span>';
-      });
-      html += '</div>';
-    }
-    if (c.session_id) {
-      html += '<div style="margin-top:4px;color:var(--text2);font-size:11px">Session: ' + escHtml(c.session_id) + '</div>';
-    }
-    html += '</div></td></tr>';
-  });
-  html += '</tbody></table></div>';
   body.innerHTML = html;
 }
 
