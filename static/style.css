@@ -180,3 +180,40 @@ tr.clickable:hover td{background:var(--hover)}
 .ratio-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--border);margin-top:4px}
 .ratio-bar .fill-infer{background:var(--accent)}
 .ratio-bar .fill-tool{background:var(--green)}
+
+/* 徽章 */
+.badge{padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;margin-left:8px}
+.badge.error{background:var(--red);color:#fff}
+.badge:not(.error){background:var(--accent);color:#fff}
+
+/* 模型调用表格 */
+.model-calls-table{width:100%;border-collapse:collapse;font-size:13px}
+.model-calls-table th{text-align:left;padding:8px 10px;background:var(--bg2);color:var(--text2);font-weight:500;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1}
+.model-calls-table td{padding:6px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.model-calls-table tr:hover{background:var(--hover)}
+.model-calls-table .cost{color:var(--yellow);font-family:monospace;font-size:12px}
+.model-calls-table .model-name{color:var(--accent);font-weight:500}
+.model-calls-table .stop-tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;background:var(--bg3);color:var(--text2)}
+.model-calls-table .stop-tag.stop{background:#1a3a2a;color:var(--green)}
+.model-calls-table .stop-tag.toolUse{background:#1a2a3a;color:var(--blue)}
+.mc-detail{display:none;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin:4px 0;font-size:12px}
+.mc-detail.open{display:block}
+.mc-detail pre{white-space:pre-wrap;word-break:break-all;color:var(--text2);margin:4px 0;max-height:150px;overflow-y:auto}
+.mc-detail .tool-list{margin:4px 0}
+.mc-detail .tool-item{display:inline-block;padding:2px 8px;margin:2px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;font-size:11px}
+
+/* 错误列表 */
+.errors-table{width:100%;border-collapse:collapse;font-size:13px}
+.errors-table th{text-align:left;padding:8px 10px;background:var(--bg2);color:var(--text2);font-weight:500;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1}
+.errors-table td{padding:6px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.errors-table tr:hover{background:var(--hover)}
+.errors-table tr.error-row{border-left:3px solid var(--red)}
+.errors-table tr.warn-row{border-left:3px solid var(--yellow)}
+.error-type-tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:500}
+.error-type-tag.error{background:#3a1a1a;color:var(--red)}
+.error-type-tag.warn{background:#3a2a1a;color:var(--yellow)}
+.error-detail-full{display:none;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin:4px 0;white-space:pre-wrap;font-family:monospace;font-size:12px;max-height:200px;overflow-y:auto;color:var(--text2)}
+.error-detail-full.open{display:block}
+.error-subsystem{color:var(--purple);font-size:11px}
+.error-source{color:var(--text2);font-size:11px;font-family:monospace}
+.model-calls-scroll,.errors-scroll{max-height:500px;overflow-y:auto}

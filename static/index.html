@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OpenClaw 诊断面板</title>
 <link rel="preconnect" href="/">
-<link rel="preload" href="/static/app.js?v=11" as="script">
+<link rel="preload" href="/static/app.js?v=12" as="script">
 <link rel="preload" href="/api/dates" as="fetch" crossorigin>
 <style>
 /* 关键内联 CSS — 首屏骨架样式，避免 FOUC */
@@ -26,7 +26,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .loading-skeleton{height:80px;background:linear-gradient(90deg,var(--card) 25%,var(--bg2) 50%,var(--card) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 </style>
-<link rel="stylesheet" href="/static/style.css?v=11">
+<link rel="stylesheet" href="/static/style.css?v=12">
 </head>
 <body>
 <div class="container">
@@ -72,10 +72,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
     <div class="section-body open" id="pipelineBody"></div>
   </div>
 
+  <!-- 模型调用记录 -->
+  <div id="modelCallsSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleSection(this)">
+      <h2>🤖 模型调用记录 <span id="modelCallsCount" class="badge"></span></h2>
+      <span class="toggle-icon">▶</span>
+    </div>
+    <div class="section-body" id="modelCallsBody"></div>
+  </div>
+
   <!-- Run 列表 -->
   <div id="content"></div>
 
+  <!-- 错误列表 -->
+  <div id="errorsSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleSection(this)">
+      <h2>❌ 错误列表 <span id="errorCount" class="badge error"></span></h2>
+      <span class="toggle-icon">▼</span>
+    </div>
+    <div class="section-body open" id="errorsBody"></div>
+  </div>
+
 </div>
-<script defer src="/static/app.js?v=11"></script>
+<script defer src="/static/app.js?v=12"></script>
 </body>
 </html>

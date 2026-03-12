@@ -336,6 +336,136 @@ function renderPipeline(data) {
   body.innerHTML = html;
 }
 
+// ============================================================
+// 渲染 — 模型调用记录
+// ============================================================
+function renderModelCalls(data) {
+  var sec = $('#modelCallsSection');
+  var body = $('#modelCallsBody');
+  var badge = $('#modelCallsCount');
+  if (!sec || !body) return;
+  if (!data || !data.model_calls || data.model_calls.length === 0) {
+    sec.style.display = 'none';
+    return;
+  }
+  sec.style.display = 'block';
+  if (badge) badge.textContent = data.total || data.model_calls.length;
+
+  var calls = data.model_calls;
+  var html = '<div class="model-calls-scroll"><table class="model-calls-table"><thead><tr>';
+  html += '<th>时间</th><th>模型</th><th>Provider</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>停止原因</th><th></th>';
+  html += '</tr></thead><tbody>';
+  calls.forEach(function (c, idx) {
+    var ts = c.timestamp || '';
+    // 提取时间部分
+    if (ts.indexOf('T') > -1) {
+      ts = ts.split('T')[1] || ts;
+      if (ts.length > 12) ts = ts.substring(0, 12);
+    }
+    var model = shortModel(c.model || '');
+    var provider = c.provider || '';
+    var u = c.usage || {};
+    var cost = c.cost || {};
+    var stopCls = (c.stop_reason === 'stop') ? 'stop' : (c.stop_reason === 'toolUse' ? 'toolUse' : '');
+    var costStr = cost.total ? ('$' + cost.total.toFixed(6)) : '-';
+    var cacheStr = fmtTok(u.cacheRead || 0);
+    if ((u.cacheRead || 0) > 0 && (u.input || 0) > 0) {
+      var hitPct = Math.round((u.cacheRead) / (u.cacheRead + u.input) * 100);
+      cacheStr += ' (' + hitPct + '%)';
+    }
+
+    html += '<tr onclick="toggleModelCallDetail(' + idx + ')" style="cursor:pointer">';
+    html += '<td>' + escHtml(ts) + '</td>';
+    html += '<td class="model-name">' + escHtml(model) + '</td>';
+    html += '<td>' + escHtml(provider) + '</td>';
+    html += '<td>' + fmtTok(u.input || 0) + '</td>';
+    html += '<td>' + fmtTok(u.output || 0) + '</td>';
+    html += '<td>' + cacheStr + '</td>';
+    html += '<td class="cost">' + costStr + '</td>';
+    html += '<td><span class="stop-tag ' + stopCls + '">' + escHtml(c.stop_reason || '-') + '</span></td>';
+    html += '<td style="font-size:11px;color:var(--text2)">▶</td>';
+    html += '</tr>';
+
+    // 展开详情行
+    var cs = c.content_summary || {};
+    html += '<tr><td colspan="9" style="padding:0"><div class="mc-detail" id="mc-detail-' + idx + '">';
+    if (cs.has_thinking && cs.thinking_preview) {
+      html += '<div><strong>💭 Thinking:</strong><pre>' + escHtml(cs.thinking_preview) + '...</pre></div>';
+    }
+    if (cs.has_text && cs.text_preview) {
+      html += '<div><strong>💬 Text:</strong><pre>' + escHtml(cs.text_preview) + '</pre></div>';
+    }
+    if (cs.tool_calls && cs.tool_calls.length > 0) {
+      html += '<div class="tool-list"><strong>🔧 工具调用:</strong> ';
+      cs.tool_calls.forEach(function (tc) {
+        html += '<span class="tool-item">' + escHtml(tc.name) + (tc.args_summary ? ': ' + escHtml(tc.args_summary) : '') + '</span>';
+      });
+      html += '</div>';
+    }
+    if (c.session_id) {
+      html += '<div style="margin-top:4px;color:var(--text2);font-size:11px">Session: ' + escHtml(c.session_id) + '</div>';
+    }
+    html += '</div></td></tr>';
+  });
+  html += '</tbody></table></div>';
+  body.innerHTML = html;
+}
+
+window.toggleModelCallDetail = function (idx) {
+  var el = document.getElementById('mc-detail-' + idx);
+  if (el) el.classList.toggle('open');
+};
+
+// ============================================================
+// 渲染 — 错误列表
+// ============================================================
+function renderErrors(data) {
+  var sec = $('#errorsSection');
+  var body = $('#errorsBody');
+  var badge = $('#errorCount');
+  if (!sec || !body) return;
+  if (!data || !data.errors || data.errors.length === 0) {
+    sec.style.display = 'none';
+    if (badge) badge.textContent = '';
+    return;
+  }
+  sec.style.display = 'block';
+  if (badge) badge.textContent = data.total || data.errors.length;
+
+  var errors = data.errors;
+  var html = '<div class="errors-scroll"><table class="errors-table"><thead><tr>';
+  html += '<th>时间</th><th>级别</th><th>类型</th><th>子系统</th><th>错误信息</th><th>来源</th>';
+  html += '</tr></thead><tbody>';
+  errors.forEach(function (e, idx) {
+    var sevCls = (e.severity === 'error') ? 'error-row' : 'warn-row';
+    var tagCls = (e.severity === 'error') ? 'error' : 'warn';
+    var sevLabel = (e.severity === 'error') ? '🔴 Error' : '🟡 Warn';
+    var detail = e.detail || '';
+    var shortDetail = detail.length > 120 ? detail.substring(0, 120) + '...' : detail;
+
+    html += '<tr class="' + sevCls + '" onclick="toggleErrorDetail(' + idx + ')" style="cursor:pointer">';
+    html += '<td style="white-space:nowrap">' + escHtml(e.time || '') + '</td>';
+    html += '<td><span class="error-type-tag ' + tagCls + '">' + sevLabel + '</span></td>';
+    html += '<td><span class="error-type-tag">' + escHtml(e.type || '') + '</span></td>';
+    html += '<td class="error-subsystem">' + escHtml(e.subsystem || '') + '</td>';
+    html += '<td>' + escHtml(shortDetail) + '</td>';
+    html += '<td class="error-source">' + escHtml(e.source_file || '') + '</td>';
+    html += '</tr>';
+
+    // 展开完整错误
+    if (detail.length > 120) {
+      html += '<tr><td colspan="6" style="padding:0"><div class="error-detail-full" id="err-detail-' + idx + '">' + escHtml(detail) + '</div></td></tr>';
+    }
+  });
+  html += '</tbody></table></div>';
+  body.innerHTML = html;
+}
+
+window.toggleErrorDetail = function (idx) {
+  var el = document.getElementById('err-detail-' + idx);
+  if (el) el.classList.toggle('open');
+};
+
 // 渲染 — Run 列表
 // ============================================================
 function renderRunList(data) {
@@ -538,7 +668,9 @@ function loadData() {
     renderSummary(data.summary);
     renderEventsSummary(data.events);
     renderPipeline(data.events);
+    renderModelCalls(data.model_calls);
     renderRunList(data.runs);
+    renderErrors(data.errors);
   });
 }
 

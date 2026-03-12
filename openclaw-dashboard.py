@@ -40,7 +40,7 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 
 # ============================================================
@@ -385,6 +385,57 @@ def parse_all_events(filepath):
         if ts:
             ts_display = ts.strftime("%H:%M:%S.%f")[:-3]
 
+        # === Capture ALL ERROR level logs ===
+        log_level_name = obj.get("logLevelName", "")
+        if log_level_name == "ERROR":
+            source_file = ""
+            path_field = obj.get("path", "")
+            if isinstance(path_field, str) and path_field:
+                source_file = path_field.split("/")[-1] if "/" in path_field else path_field
+            detail_text = msg if msg else ""
+            if isinstance(data, dict):
+                # Include extra data fields for richer detail
+                err_str = data.get("err", "")
+                if err_str:
+                    detail_text = detail_text + "\n" + str(err_str)
+                msg_detail = data.get("message", "")
+                if msg_detail and str(msg_detail) not in detail_text:
+                    detail_text = detail_text + "\n" + str(msg_detail)
+            # Truncate to 500 chars
+            detail_text = detail_text[:500] if detail_text else ""
+            # Determine error type
+            err_type = "error.general"
+            if "exec failed" in msg or "[tools] exec" in msg:
+                err_type = "error.exec"
+            elif "sendMessage failed" in msg or "telegram" in subsystem.lower():
+                err_type = "error.telegram"
+            elif "model" in msg.lower() or "provider" in msg.lower():
+                err_type = "error.model"
+            elif "reply failed" in msg:
+                err_type = "error.reply"
+            channel_name = ""
+            if "telegram" in subsystem.lower() or "telegram" in msg.lower():
+                channel_name = "telegram"
+            error_evt = {
+                "time": ts_display,
+                "time_full": ts_str,
+                "type": err_type,
+                "severity": "error",
+                "subsystem": subsystem,
+                "detail": detail_text,
+                "source_file": source_file,
+                "channel": channel_name,
+                "run_id": extract_kv(msg, "runId"),
+                "session_id": extract_kv(msg, "sessionId"),
+            }
+            events["errors"].append(error_evt)
+            events["all_timeline"].append({
+                "time": ts_display, "time_full": ts_str,
+                "category": "error", "type": err_type,
+                "detail": detail_text[:200],
+            })
+            # Don't skip — let specific handlers below also process if applicable
+
         # === Webhook / Telegram raw updates ===
         if subsystem == "gateway/channels/telegram/raw-update":
             evt = {
@@ -405,22 +456,33 @@ def parse_all_events(filepath):
         # === Telegram channel events (sendMessage ok/failed) ===
         if subsystem == "gateway/channels/telegram":
             if "sendMessage failed" in msg or "reply failed" in msg:
-                err_evt = {
-                    "time": ts_display, "time_full": ts_str,
-                    "type": "webhook.error", "channel": "telegram",
-                    "detail": msg,
-                }
-                events["errors"].append(err_evt)
+                # Only add if not already captured by ERROR level handler above
+                already_captured = False
+                if log_level_name == "ERROR":
+                    already_captured = True
+                if not already_captured:
+                    err_evt = {
+                        "time": ts_display, "time_full": ts_str,
+                        "type": "error.telegram", "severity": "error",
+                        "channel": "telegram",
+                        "subsystem": subsystem,
+                        "detail": msg[:500],
+                        "source_file": "",
+                        "run_id": "",
+                        "session_id": "",
+                    }
+                    events["errors"].append(err_evt)
                 events["webhooks"].append({
                     "time": ts_display, "time_full": ts_str,
                     "type": "webhook.error", "channel": "telegram",
                     "detail": msg,
                 })
-                events["all_timeline"].append({
-                    "time": ts_display, "time_full": ts_str,
-                    "category": "error", "type": "webhook.error",
-                    "detail": msg[:200],
-                })
+                if not already_captured:
+                    events["all_timeline"].append({
+                        "time": ts_display, "time_full": ts_str,
+                        "category": "error", "type": "webhook.error",
+                        "detail": msg[:200],
+                    })
             continue
 
         # === Diagnostic subsystem events ===
@@ -481,8 +543,13 @@ def parse_all_events(filepath):
                 events["errors"].append({
                     "time": ts_display, "time_full": ts_str,
                     "type": "message.error",
+                    "severity": "warn",
                     "channel": channel,
+                    "subsystem": "diagnostic",
                     "detail": "outcome=%s session=%s messageId=%s" % (outcome, session_key, message_id),
+                    "source_file": "",
+                    "run_id": "",
+                    "session_id": "",
                 })
 
         # --- session state ---
@@ -648,8 +715,13 @@ def parse_all_events(filepath):
             events["errors"].append({
                 "time": ts_display, "time_full": ts_str,
                 "type": "run.abort",
+                "severity": "error",
                 "channel": "",
-                "detail": msg[:200],
+                "subsystem": "diagnostic",
+                "detail": msg[:500],
+                "source_file": "",
+                "run_id": extract_kv(msg, "runId"),
+                "session_id": "",
             })
 
     # Sort timeline by time_full
@@ -664,18 +736,33 @@ def parse_all_events(filepath):
 def parse_session_files(sessions_dirs):
     """解析会话文件，建立 toolCallId -> {arguments, usage} 映射
     同时收集纯文本回复（无 toolCall）的 usage，按 timestamp 索引
-    返回: (tool_data, text_reply_usage)
+    同时收集模型调用记录列表 (每次 assistant 消息 = 一次调用)
+    返回: (tool_data, text_reply_usage, model_calls)
     """
     tool_data = {}  # toolCallId -> {tool, arguments_raw, arguments_summary, usage}
     text_reply_usage = []  # [(timestamp_str, usage_dict)]
+    model_calls = []  # 每次 assistant 消息的详细调用记录
     if not sessions_dirs:
-        return tool_data, text_reply_usage
+        return tool_data, text_reply_usage, model_calls
     files = []
     for d in sessions_dirs:
         pattern = os.path.join(d, "*.jsonl")
         files.extend(glob.glob(pattern))
     for fpath in files:
         lines = safe_read_lines(fpath, max_lines=20000)
+        # 先找 session_id (第一行 type=session)
+        file_session_id = ""
+        for line in lines:
+            line_s = line.strip()
+            if not line_s:
+                continue
+            try:
+                first_obj = json.loads(line_s)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if first_obj.get("type") == "session":
+                file_session_id = first_obj.get("id", "")
+            break
         for line in lines:
             line = line.strip()
             if not line:
@@ -700,6 +787,7 @@ def parse_session_files(sessions_dirs):
             if not isinstance(content, list):
                 continue
             has_tool_call = False
+            tool_call_list = []
             for item in content:
                 if not isinstance(item, dict):
                     continue
@@ -721,10 +809,75 @@ def parse_session_files(sessions_dirs):
                     "usage": usage,
                     "timestamp": timestamp,
                 }
+                # 简化 args_summary 用于调用记录
+                args_short = summary[:100] if summary else ""
+                tool_call_list.append({
+                    "name": tc_name,
+                    "id": tc_id,
+                    "args_summary": args_short,
+                })
             # 没有 toolCall 的 assistant 消息 = 纯文本回复
             if not has_tool_call and usage and timestamp:
                 text_reply_usage.append((timestamp, usage))
-    return tool_data, text_reply_usage
+
+            # 构建模型调用记录
+            provider = msg.get("provider", "")
+            api_name = msg.get("api", "")
+            stop_reason = msg.get("stopReason", "")
+            cost_data = usage.get("cost", {}) if isinstance(usage, dict) else {}
+
+            # content_summary
+            has_thinking = False
+            thinking_preview = ""
+            has_text = False
+            text_preview = ""
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                itype = item.get("type", "")
+                if itype == "thinking":
+                    has_thinking = True
+                    tk = item.get("thinking", "")
+                    if tk and not thinking_preview:
+                        thinking_preview = tk[:100]
+                elif itype == "text":
+                    has_text = True
+                    tx = item.get("text", "")
+                    if tx and not text_preview:
+                        text_preview = tx[:200]
+
+            call_record = {
+                "timestamp": timestamp,
+                "session_id": file_session_id,
+                "model": model,
+                "provider": provider,
+                "api": api_name,
+                "stop_reason": stop_reason,
+                "usage": {
+                    "input": usage.get("input", 0) if isinstance(usage, dict) else 0,
+                    "output": usage.get("output", 0) if isinstance(usage, dict) else 0,
+                    "cacheRead": usage.get("cacheRead", 0) if isinstance(usage, dict) else 0,
+                    "cacheWrite": usage.get("cacheWrite", 0) if isinstance(usage, dict) else 0,
+                    "totalTokens": usage.get("totalTokens", 0) if isinstance(usage, dict) else 0,
+                },
+                "cost": {
+                    "input": cost_data.get("input", 0) if isinstance(cost_data, dict) else 0,
+                    "output": cost_data.get("output", 0) if isinstance(cost_data, dict) else 0,
+                    "total": cost_data.get("total", 0) if isinstance(cost_data, dict) else 0,
+                },
+                "content_summary": {
+                    "has_thinking": has_thinking,
+                    "thinking_preview": thinking_preview,
+                    "has_text": has_text,
+                    "text_preview": text_preview,
+                    "tool_calls": tool_call_list,
+                },
+            }
+            model_calls.append(call_record)
+
+    # Sort model_calls by timestamp descending
+    model_calls.sort(key=lambda c: c.get("timestamp", ""), reverse=True)
+    return tool_data, text_reply_usage, model_calls
 
 
 def summarize_tool_args(tool_name, args_raw):
@@ -1174,6 +1327,7 @@ class DataStore(object):
         self._events_cache = {}  # date -> (mtime, events dict)
         self._tool_data = None
         self._text_reply_usage = None
+        self._model_calls = None
         self._tool_data_loaded = False
         self._lock = threading.Lock()
 
@@ -1181,13 +1335,33 @@ class DataStore(object):
         if not self._tool_data_loaded:
             with self._lock:
                 if not self._tool_data_loaded:
-                    self._tool_data, self._text_reply_usage = parse_session_files(self.sessions_dirs)
+                    self._tool_data, self._text_reply_usage, self._model_calls = parse_session_files(self.sessions_dirs)
                     self._tool_data_loaded = True
         return self._tool_data or {}
 
     def _get_text_reply_usage(self):
         self._get_tool_data()
         return self._text_reply_usage or []
+
+    def get_model_calls(self, date=None, page=1, per_page=50):
+        """返回模型调用记录列表 (分页)，可按日期过滤"""
+        self._get_tool_data()
+        calls = self._model_calls or []
+        if date:
+            calls = [c for c in calls if c.get("timestamp", "").startswith(date)]
+        total = len(calls)
+        start = (page - 1) * per_page
+        end = start + per_page
+        page_calls = calls[start:end]
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        return {
+            "date": date or "",
+            "model_calls": page_calls,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+        }
 
     def get_dates(self):
         pattern = os.path.join(self.log_dir, "openclaw-*.log")
@@ -1535,13 +1709,20 @@ class DataStore(object):
             "total": len(events.get("messages", [])),
         }
 
-    def get_events_errors(self, date):
-        """返回错误事件列表"""
+    def get_events_errors(self, date, severity=None, err_type=None):
+        """返回错误事件列表，支持过滤"""
         events = self._load_events(date)
+        errors = events.get("errors", [])
+        # 按时间倒序
+        errors = sorted(errors, key=lambda e: e.get("time_full", ""), reverse=True)
+        if severity:
+            errors = [e for e in errors if e.get("severity", "") == severity]
+        if err_type:
+            errors = [e for e in errors if e.get("type", "") == err_type]
         return {
             "date": date,
-            "errors": events.get("errors", []),
-            "total": len(events.get("errors", [])),
+            "errors": errors,
+            "total": len(errors),
         }
 
     def get_runs_list(self, date, page=1, per_page=20):
@@ -1963,6 +2144,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "summary": self.data_store.get_summary(date),
                     "events": self.data_store.get_events_summary(date),
                     "runs": self.data_store.get_runs_list(date, page, per_page),
+                    "errors": self.data_store.get_events_errors(date),
+                    "model_calls": self.data_store.get_model_calls(date, page=1, per_page=50),
                 }
                 self._send_json(result)
             elif path == "/api/summary":
@@ -2053,7 +2236,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not date:
                     self._send_json({"date": "", "errors": [], "total": 0})
                     return
-                result = self.data_store.get_events_errors(date)
+                severity = params.get("severity", [""])[0] or None
+                err_type = params.get("type", [""])[0] or None
+                result = self.data_store.get_events_errors(date, severity=severity, err_type=err_type)
+                self._send_json(result)
+            elif path == "/api/model_calls":
+                date = params.get("date", [""])[0]
+                if not date:
+                    dates = self.data_store.get_dates()
+                    date = dates[0] if dates else ""
+                if not date:
+                    self._send_json({"date": "", "model_calls": [], "total": 0, "page": 1, "per_page": 50, "total_pages": 1})
+                    return
+                page = 1
+                per_page = 50
+                try:
+                    page = int(params.get("page", ["1"])[0])
+                except (ValueError, IndexError):
+                    pass
+                try:
+                    per_page = int(params.get("per_page", ["50"])[0])
+                except (ValueError, IndexError):
+                    pass
+                per_page = max(1, min(per_page, 200))
+                result = self.data_store.get_model_calls(date, page, per_page)
                 self._send_json(result)
             elif path == "/api/debug/sessions":
                 # 诊断端点：检查 session 文件解析情况
