@@ -655,7 +655,6 @@ function loadData() {
     renderEventsSummary(data.events);
     renderPipeline(data.events);
     renderRunList(data.runs);
-    renderErrors(data.errors);
   });
 }
 
