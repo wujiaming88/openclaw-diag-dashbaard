@@ -416,6 +416,11 @@ window.toggleModelCallDetail = function (idx) {
   if (el) el.classList.toggle('open');
 };
 
+window.toggleMcRunDetail = function (id) {
+  var el = document.getElementById(id);
+  if (el) el.classList.toggle('open');
+};
+
 // ============================================================
 // 渲染 — 错误列表
 // ============================================================
@@ -624,6 +629,61 @@ function renderRunDetail(d, el) {
     html += '</div>';
   }
 
+  // 模型调用详情 (嵌入 Run 内)
+  if (d.model_calls && d.model_calls.length > 0) {
+    html += '<div class="detail-section" style="margin-top:12px"><h4>🤖 模型调用 (' + d.model_calls.length + ' 次)</h4>';
+    html += '<table class="model-calls-table"><thead><tr>';
+    html += '<th>时间</th><th>模型</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>停止</th><th></th>';
+    html += '</tr></thead><tbody>';
+    var runUid = d.run_id ? d.run_id.substring(0, 8) : 'x';
+    d.model_calls.forEach(function (mc, mcIdx) {
+      var mcTs = mc.timestamp || '';
+      if (mcTs.indexOf('T') > -1) {
+        mcTs = mcTs.split('T')[1] || mcTs;
+        if (mcTs.length > 12) mcTs = mcTs.substring(0, 12);
+      }
+      var mcU = mc.usage || {};
+      var mcCost = mc.cost || {};
+      var stopCls = (mc.stop_reason === 'stop') ? 'stop' : (mc.stop_reason === 'toolUse' ? 'toolUse' : '');
+      var costStr = mcCost.total ? ('$' + mcCost.total.toFixed(6)) : '-';
+      var cacheStr = fmtTok(mcU.cacheRead || 0);
+      if ((mcU.cacheRead || 0) > 0 && (mcU.input || 0) > 0) {
+        var hitPct = Math.round(mcU.cacheRead / (mcU.cacheRead + mcU.input) * 100);
+        cacheStr += ' (' + hitPct + '%)';
+      }
+      var detailId = 'mc-run-' + runUid + '-' + mcIdx;
+      html += '<tr onclick="toggleMcRunDetail(\'' + detailId + '\')" style="cursor:pointer">';
+      html += '<td>' + escHtml(mcTs) + '</td>';
+      html += '<td class="model-name">' + escHtml(shortModel(mc.model || '')) + '</td>';
+      html += '<td>' + fmtTok(mcU.input || 0) + '</td>';
+      html += '<td>' + fmtTok(mcU.output || 0) + '</td>';
+      html += '<td>' + cacheStr + '</td>';
+      html += '<td class="cost">' + costStr + '</td>';
+      html += '<td><span class="stop-tag ' + stopCls + '">' + escHtml(mc.stop_reason || '-') + '</span></td>';
+      html += '<td style="font-size:11px;color:var(--text2)">▶</td>';
+      html += '</tr>';
+
+      // 展开详情
+      var cs = mc.content_summary || {};
+      html += '<tr><td colspan="8" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
+      if (cs.has_thinking && cs.thinking_preview) {
+        html += '<div><strong>💭 Thinking:</strong><pre>' + escHtml(cs.thinking_preview) + '...</pre></div>';
+      }
+      if (cs.has_text && cs.text_preview) {
+        html += '<div><strong>💬 Output:</strong><pre>' + escHtml(cs.text_preview) + '</pre></div>';
+      }
+      if (cs.tool_calls && cs.tool_calls.length > 0) {
+        html += '<div class="tool-list"><strong>🔧 工具:</strong> ';
+        cs.tool_calls.forEach(function (tc) {
+          html += '<span class="tool-item">' + escHtml(tc.name) + (tc.args_summary ? ': ' + escHtml(tc.args_summary) : '') + '</span>';
+        });
+        html += '</div>';
+      }
+      html += '</div></td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
   // Prompt 信息
   if (d.prompt_info && d.prompt_info.messages) {
     html += '<div style="margin-top:4px;font-size:12px;color:var(--text2)">';
@@ -668,7 +728,6 @@ function loadData() {
     renderSummary(data.summary);
     renderEventsSummary(data.events);
     renderPipeline(data.events);
-    renderModelCalls(data.model_calls);
     renderRunList(data.runs);
     renderErrors(data.errors);
   });

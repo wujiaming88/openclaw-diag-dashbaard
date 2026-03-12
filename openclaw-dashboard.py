@@ -1925,6 +1925,26 @@ class DataStore(object):
 
         dur_s = total_dur / 1000.0 if total_dur > 0 else 1
         overall_tok_s = round(total_output / dur_s, 1) if total_output > 0 else 0
+
+        # 匹配此 run 时间范围内的模型调用
+        run_model_calls = []
+        if run_start_str and run_end_str:
+            all_model_calls = self._model_calls or []
+            session_id = run.get("session_id", "")
+            for mc in all_model_calls:
+                mc_ts = mc.get("timestamp", "")
+                if not mc_ts:
+                    continue
+                # 比较 ISO 时间 (截取到秒)
+                mc_ts_short = mc_ts[:19]
+                if mc_ts_short >= run_start_str and mc_ts_short <= run_end_str:
+                    # 如果有 session_id 则额外匹配
+                    if session_id and mc.get("session_id") and mc["session_id"] != session_id:
+                        continue
+                    run_model_calls.append(mc)
+            # 按时间正序
+            run_model_calls.sort(key=lambda c: c.get("timestamp", ""))
+
         return {
             "run_id": run["run_id"],
             "session_id": run.get("session_id", ""),
@@ -1950,6 +1970,7 @@ class DataStore(object):
             "infer_segments": infer_list,
             "tools": tools_list,
             "gantt": gantt,
+            "model_calls": run_model_calls,
         }
 
 
@@ -2145,7 +2166,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "events": self.data_store.get_events_summary(date),
                     "runs": self.data_store.get_runs_list(date, page, per_page),
                     "errors": self.data_store.get_events_errors(date),
-                    "model_calls": self.data_store.get_model_calls(date, page=1, per_page=50),
                 }
                 self._send_json(result)
             elif path == "/api/summary":
