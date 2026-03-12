@@ -1437,6 +1437,22 @@ class DataStore(object):
                     self._tool_data_loaded = True
         return self._tool_data or {}
 
+    def _get_tool_data_nonblocking(self):
+        """非阻塞版本：如果数据没准备好返回空 dict"""
+        if self._tool_data_loaded:
+            return self._tool_data or {}
+        return {}
+
+    def _get_text_reply_usage_nonblocking(self):
+        if self._tool_data_loaded:
+            return self._text_reply_usage or []
+        return []
+
+    def _get_tool_results_nonblocking(self):
+        if self._tool_data_loaded:
+            return self._tool_results or {}
+        return {}
+
     def _get_text_reply_usage(self):
         self._get_tool_data()
         return self._text_reply_usage or []
@@ -1534,7 +1550,7 @@ class DataStore(object):
         error_count = 0
         models = set()
         channels = set()
-        tool_data = self._get_tool_data()
+        tool_data = self._get_tool_data_nonblocking()
         for run in runs.values():
             dur = run.get("duration_ms", 0)
             if dur > 0:
@@ -1556,7 +1572,7 @@ class DataStore(object):
                 usage = td.get("usage", {})
                 total_tokens += usage.get("output", 0)
         # 也收集 text_reply_usage
-        text_reply_usage = self._get_text_reply_usage()
+        text_reply_usage = self._get_text_reply_usage_nonblocking()
         total_input = 0
         total_cache_read = 0
         total_cache_write = 0
@@ -1625,7 +1641,7 @@ class DataStore(object):
         """返回所有事件的汇总统计"""
         events = self._load_events(date)
         runs = self._load_runs(date)
-        tool_data = self._get_tool_data()
+        tool_data = self._get_tool_data_nonblocking()
 
         # Count event types
         webhooks_received = sum(1 for w in events["webhooks"] if w.get("type") == "webhook.received")
@@ -1830,8 +1846,8 @@ class DataStore(object):
     def get_runs_list(self, date, page=1, per_page=20):
         """返回某天的 run 列表（分页）"""
         runs = self._load_runs(date)
-        tool_data = self._get_tool_data()
-        text_reply_usage = self._get_text_reply_usage()
+        tool_data = self._get_tool_data_nonblocking()
+        text_reply_usage = self._get_text_reply_usage_nonblocking()
         all_results = []
         for run in runs.values():
             infer_segs = compute_infer_segments(run)
