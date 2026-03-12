@@ -35,6 +35,7 @@ import traceback
 from collections import OrderedDict
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 
 # ============================================================
@@ -2115,6 +2116,11 @@ MIME_TYPES = {
 }
 
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """多线程 HTTP 服务器，避免单请求阻塞"""
+    daemon_threads = True
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP 请求处理器"""
 
@@ -2149,43 +2155,46 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _send_body(self, body, content_type, status=200, cache_control="no-cache", etag=None):
         """统一发送响应，自动处理 gzip 和 ETag"""
-        # ETag 304 检查
-        if etag:
-            inm = self.headers.get("If-None-Match", "")
-            if inm == etag:
-                self.send_response(304)
+        try:
+            # ETag 304 检查
+            if etag:
+                inm = self.headers.get("If-None-Match", "")
+                if inm == etag:
+                    self.send_response(304)
+                    self.send_header("ETag", etag)
+                    self.send_header("Cache-Control", cache_control)
+                    self.end_headers()
+                    return
+
+            # gzip 压缩 (>1KB 的文本响应)
+            use_gzip = False
+            gzip_body = None
+            if self._accepts_gzip() and len(body) > 1024:
+                ct_lower = content_type.lower()
+                if any(t in ct_lower for t in ("text/", "json", "javascript", "xml", "svg")):
+                    gzip_body = self._gzip_body(body)
+                    # 只在压缩有效时使用 (至少省 10%)
+                    if len(gzip_body) < len(body) * 0.9:
+                        use_gzip = True
+
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", cache_control)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            if etag:
                 self.send_header("ETag", etag)
-                self.send_header("Cache-Control", cache_control)
+            if use_gzip:
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(gzip_body)))
+                self.send_header("Vary", "Accept-Encoding")
                 self.end_headers()
-                return
-
-        # gzip 压缩 (>1KB 的文本响应)
-        use_gzip = False
-        gzip_body = None
-        if self._accepts_gzip() and len(body) > 1024:
-            ct_lower = content_type.lower()
-            if any(t in ct_lower for t in ("text/", "json", "javascript", "xml", "svg")):
-                gzip_body = self._gzip_body(body)
-                # 只在压缩有效时使用 (至少省 10%)
-                if len(gzip_body) < len(body) * 0.9:
-                    use_gzip = True
-
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", cache_control)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        if etag:
-            self.send_header("ETag", etag)
-        if use_gzip:
-            self.send_header("Content-Encoding", "gzip")
-            self.send_header("Content-Length", str(len(gzip_body)))
-            self.send_header("Vary", "Accept-Encoding")
-            self.end_headers()
-            self.wfile.write(gzip_body)
-        else:
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+                self.wfile.write(gzip_body)
+            else:
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # 客户端已断开，忽略
 
     def _send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -2518,7 +2527,7 @@ def main():
 
     if host == "::":
         try:
-            class IPv6Server(HTTPServer):
+            class IPv6Server(ThreadingHTTPServer):
                 address_family = socket.AF_INET6
             server = IPv6Server((host, port), DashboardHandler)
         except (OSError, socket.error) as e:
@@ -2527,7 +2536,7 @@ def main():
 
     if server is None:
         try:
-            server = HTTPServer((host, port), DashboardHandler)
+            server = ThreadingHTTPServer((host, port), DashboardHandler)
         except (OSError, socket.error) as e:
             print("[错误] 端口 %d 绑定失败: %s" % (port, e))
             print("请尝试其他端口: python3 %s --port %d" % (sys.argv[0], port + 1))
