@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gateway-restarts.sh — 分析 OpenClaw Gateway 重启历史
+# gateway-restarts.sh — 分析 OpenClaw Gateway restart历史
 # 用法: ./gateway-restarts.sh [日志文件或目录] [--json]
 #
 # 示例:
@@ -84,21 +84,21 @@ find_logs() {
 }
 
 if [[ -z "$LOG_INPUT" ]]; then
-  LOG_DIR=$(find_logs) || { echo "❌ 未找到日志文件，请手动指定路径" >&2; exit 1; }
+  LOG_DIR=$(find_logs) || { echo "❌ No log files found, please specify path" >&2; exit 1; }
   LOG_INPUT="$LOG_DIR"
 fi
 
 if [[ -d "$LOG_INPUT" ]]; then
   mapfile -t LOG_ARRAY < <(ls -1 "$LOG_INPUT"/openclaw-*.log 2>/dev/null | sort)
-  [[ ${#LOG_ARRAY[@]} -eq 0 ]] && { echo "❌ 目录 $LOG_INPUT 中无 openclaw-*.log 文件" >&2; exit 1; }
+  [[ ${#LOG_ARRAY[@]} -eq 0 ]] && { echo "❌ No openclaw-*.log files in directory" >&2; exit 1; }
 elif [[ -f "$LOG_INPUT" ]]; then
   LOG_ARRAY=("$LOG_INPUT")
 else
-  echo "❌ 路径不存在: $LOG_INPUT" >&2; exit 1
+  echo "❌ Path not found: $LOG_INPUT" >&2; exit 1
 fi
 
 TZ_LABEL="$DISPLAY_TZ"
-[[ "$DISPLAY_TZ" == "Asia/Shanghai" ]] && TZ_LABEL="北京时间"
+[[ "$DISPLAY_TZ" == "Asia/Shanghai" ]] && TZ_LABEL="CST"
 
 # ━━━ 提取事件流 ━━━
 
@@ -136,17 +136,17 @@ extract_events() {
 events=$(extract_events)
 
 if [[ -z "$events" ]]; then
-  echo "ℹ️  未发现任何重启记录"
+  echo "ℹ️  未发现任何restart记录"
   exit 0
 fi
 
 # ━━━ 输出 ━━━
 
 echo "┌──────────────────────────────────────────────────────────────────────────────────┐"
-echo "│  🔍 OpenClaw Gateway 重启历史分析                                               │"
+echo "│  🔍 OpenClaw Gateway Restart History                                               │"
 echo "│                                                                                  │"
-echo "│  日志来源: $LOG_INPUT"
-echo "│  显示时区: $TZ_LABEL ($DISPLAY_TZ)"
+echo "│  Logs: $LOG_INPUT"
+echo "│  Timezone: $TZ_LABEL ($DISPLAY_TZ)"
 echo "└──────────────────────────────────────────────────────────────────────────────────┘"
 echo ""
 
@@ -168,12 +168,12 @@ print_entry() {
   fi
 
   local downtime_str=""
-  [[ -n "$downtime" ]] && downtime_str=" ⏱ 停机 $downtime"
+  [[ -n "$downtime" ]] && downtime_str=" downtime $downtime"
 
   printf "  %-3d  %s\n" "$num" "$type_cn$downtime_str"
-  [[ "$down_time" != "-" ]] && echo "       ⏹ 关闭: $down_time"
-  [[ "$up_time" != "-" ]]   && echo "       ▶ 启动: $up_time"
-  echo "       📋 原因: $reason"
+  [[ "$down_time" != "-" ]] && echo "       Down: $down_time"
+  [[ "$up_time" != "-" ]]   && echo "       Up: $up_time"
+  echo "       Reason: $reason"
 }
 
 while IFS='|' read -r etype ts reason _location; do
@@ -243,7 +243,7 @@ if [[ -n "$shutdown_ts" ]]; then
     json_items+=("$(printf '{"num":%d,"shutdown":"%s","shutdown_utc":"%s","startup":null,"type":"%s","reason":"%s","downtime":null}' \
       "$restart_num" "$local_shutdown" "$shutdown_ts" "$restart_type" "$trigger_reason")")
   else
-    print_entry "$restart_num" "$local_shutdown" "⚠️  未恢复!" "$restart_type_cn" "$trigger_reason"
+    print_entry "$restart_num" "$local_shutdown" "⚠️  NOT RECOVERED" "$restart_type_cn" "$trigger_reason"
   fi
 fi
 
@@ -262,7 +262,7 @@ fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  📊 总计: $restart_num 条记录 (首次启动 ${count_initial}, 重启 ${count_restart}, 热重载 ${count_reload})"
+echo "  📊 Total: $restart_num records (initial ${count_initial}, restart ${count_restart}, hot_reload ${count_reload})"
 
 # systemd 补充信息
 if command -v systemctl &>/dev/null; then
@@ -270,7 +270,7 @@ if command -v systemctl &>/dev/null; then
     active_since=$(systemctl --user show "$svc" --property=ActiveEnterTimestamp 2>/dev/null | cut -d= -f2 || true)
     pid=$(systemctl --user show "$svc" --property=MainPID 2>/dev/null | cut -d= -f2 || true)
     if [[ -n "$active_since" ]] && [[ "$pid" != "0" ]] && [[ -n "$pid" ]]; then
-      echo "  📋 当前进程: PID $pid, 启动于 $active_since"
+      echo "  📋 Current process: PID $pid, started at $active_since"
       break
     fi
   done
