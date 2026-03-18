@@ -9,10 +9,12 @@
 #   ./gateway-restarts.sh --json                   # JSON output
 #   ./gateway-restarts.sh --tz Asia/Shanghai       # set timezone (default: Asia/Shanghai)
 #   ./gateway-restarts.sh --utc                    # use UTC
+#   ./gateway-restarts.sh --no-reload              # hide HOT_RELOAD entries
 
 set -uo pipefail
 
 JSON_OUTPUT=false
+NO_RELOAD=false
 LOG_INPUT=""
 DISPLAY_TZ="Asia/Shanghai"
 
@@ -20,6 +22,7 @@ for arg in "$@"; do
   case "$arg" in
     --json) JSON_OUTPUT=true ;;
     --utc) DISPLAY_TZ="UTC" ;;
+    --no-reload) NO_RELOAD=true ;;
     --tz) :;; # next arg handled below
     *) 
       if [[ "${prev_arg:-}" == "--tz" ]]; then
@@ -182,6 +185,7 @@ while IFS='|' read -r etype ts reason _location; do
       trigger_reason="$reason"
       ;;
     RELOAD)
+      if $NO_RELOAD; then continue; fi
       restart_num=$((restart_num + 1))
       count_reload=$((count_reload + 1))
       local_ts=$(to_display_tz "$ts")
