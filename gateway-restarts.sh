@@ -185,12 +185,8 @@ while IFS='|' read -r etype ts reason _location; do
       restart_num=$((restart_num + 1))
       local_startup=$(to_display_tz "$ts")
       if [[ -z "$shutdown_ts" ]]; then
-        if $JSON_OUTPUT; then
-          json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","startup_utc":"%s","type":"INITIAL","reason":"initial boot","downtime":null}' \
-            "$restart_num" "$local_startup" "$ts")")
-        else
-          print_entry "$restart_num" "-" "$local_startup" "INITIAL" "initial boot"
-        fi
+        # first boot, not a restart — skip
+        restart_num=$((restart_num - 1))
       else
         local_shutdown=$(to_display_tz "$shutdown_ts")
         downtime=$(calc_downtime "$shutdown_ts" "$ts")
