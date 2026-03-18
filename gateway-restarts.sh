@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# gateway-restarts.sh — 分析 OpenClaw Gateway restart历史
-# 用法: ./gateway-restarts.sh [日志文件或目录] [--json]
+# gateway-restarts.sh — Analyze OpenClaw Gateway restart history
+# Usage: ./gateway-restarts.sh [log-file-or-dir] [--json] [--utc] [--tz ZONE]
 #
-# 示例:
-#   ./gateway-restarts.sh                          # 自动查找今天的日志
-#   ./gateway-restarts.sh /tmp/openclaw/            # 扫描目录下所有日志
+# Examples:
+#   ./gateway-restarts.sh                          # auto-detect logs
+#   ./gateway-restarts.sh /tmp/openclaw/            # scan directory
 #   ./gateway-restarts.sh /tmp/openclaw/openclaw-2026-03-17.log
-#   ./gateway-restarts.sh --json                   # JSON 输出
-#   ./gateway-restarts.sh --tz Asia/Shanghai       # 指定时区（默认 Asia/Shanghai）
-#   ./gateway-restarts.sh --utc                    # 使用 UTC 时间
+#   ./gateway-restarts.sh --json                   # JSON output
+#   ./gateway-restarts.sh --tz Asia/Shanghai       # set timezone (default: Asia/Shanghai)
+#   ./gateway-restarts.sh --utc                    # use UTC
 
 set -uo pipefail
 
@@ -32,9 +32,9 @@ for arg in "$@"; do
   prev_arg="$arg"
 done
 
-# ━━━ 工具函数 ━━━
+# --- utils ---
 
-# UTC -> 指定时区转换
+# UTC -> display timezone conversion
 to_display_tz() {
   local utc_ts="$1"
   [[ -z "$utc_ts" ]] && echo "-" && return
@@ -56,7 +56,7 @@ print(dt.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S'))
   fi
 }
 
-# 计算停机秒数
+# calculate downtime
 calc_downtime() {
   local t1="$1" t2="$2"
   if command -v python3 &>/dev/null; then
@@ -72,7 +72,7 @@ print(f'{d}s' if d<60 else f'{d//60}m{d%60}s')
   fi
 }
 
-# ━━━ 查找日志 ━━━
+# --- find logs ---
 
 find_logs() {
   for dir in "/tmp/openclaw" "$HOME/.openclaw/logs" "/var/log/openclaw"; do
@@ -100,7 +100,7 @@ fi
 TZ_LABEL="$DISPLAY_TZ"
 [[ "$DISPLAY_TZ" == "Asia/Shanghai" ]] && TZ_LABEL="CST"
 
-# ━━━ 提取事件流 ━━━
+# --- extract events ---
 
 extract_events() {
   for f in "${LOG_ARRAY[@]}"; do
@@ -136,11 +136,11 @@ extract_events() {
 events=$(extract_events)
 
 if [[ -z "$events" ]]; then
-  echo "ℹ️  未发现任何restart记录"
+  echo "No restart records found"
   exit 0
 fi
 
-# ━━━ 输出 ━━━
+# --- output ---
 
 echo "┌──────────────────────────────────────────────────────────────────────────────────┐"
 echo "│  🔍 OpenClaw Gateway Restart History                                               │"
@@ -235,7 +235,7 @@ while IFS='|' read -r etype ts reason _location; do
   esac
 done <<< "$events"
 
-# 未闭合的 shutdown
+# unclosed shutdown
 if [[ -n "$shutdown_ts" ]]; then
   restart_num=$((restart_num + 1))
   local_shutdown=$(to_display_tz "$shutdown_ts")
@@ -247,7 +247,7 @@ if [[ -n "$shutdown_ts" ]]; then
   fi
 fi
 
-# JSON 输出
+# JSON output
 if $JSON_OUTPUT; then
   echo "["
   for i in "${!json_items[@]}"; do
@@ -264,7 +264,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  📊 Total: $restart_num records (initial ${count_initial}, restart ${count_restart}, hot_reload ${count_reload})"
 
-# systemd 补充信息
+# systemd info
 if command -v systemctl &>/dev/null; then
   for svc in openclaw-gateway openclaw; do
     active_since=$(systemctl --user show "$svc" --property=ActiveEnterTimestamp 2>/dev/null | cut -d= -f2 || true)
