@@ -200,7 +200,7 @@ while IFS='|' read -r etype ts reason _location; do
         trigger_reason="$reason"
       else
         restart_type="SIGTERM"
-        restart_type_cn="⏹ 终止重启"
+        restart_type_cn="⏹ SIGTERM"
         [[ -z "$trigger_reason" ]] && trigger_reason="manual/systemd"
       fi
       ;;
