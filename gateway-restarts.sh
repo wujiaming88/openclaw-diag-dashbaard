@@ -7,18 +7,56 @@
 #   ./gateway-restarts.sh /tmp/openclaw/            # 扫描目录下所有日志
 #   ./gateway-restarts.sh /tmp/openclaw/openclaw-2026-03-17.log
 #   ./gateway-restarts.sh --json                   # JSON 输出
+#   ./gateway-restarts.sh --tz Asia/Shanghai       # 指定时区（默认 Asia/Shanghai）
+#   ./gateway-restarts.sh --utc                    # 使用 UTC 时间
 
 set -uo pipefail
 
 JSON_OUTPUT=false
 LOG_INPUT=""
+DISPLAY_TZ="Asia/Shanghai"
 
 for arg in "$@"; do
   case "$arg" in
     --json) JSON_OUTPUT=true ;;
-    *) LOG_INPUT="$arg" ;;
+    --utc) DISPLAY_TZ="UTC" ;;
+    --tz) :;; # next arg handled below
+    *) 
+      # handle --tz VALUE
+      if [[ "${prev_arg:-}" == "--tz" ]]; then
+        DISPLAY_TZ="$arg"
+      else
+        LOG_INPUT="$arg"
+      fi
+      ;;
   esac
+  prev_arg="$arg"
 done
+
+# UTC -> 指定时区转换函数
+to_display_tz() {
+  local utc_ts="$1"
+  [[ -z "$utc_ts" ]] && echo "-" && return
+  if [[ "$DISPLAY_TZ" == "UTC" ]]; then
+    echo "$utc_ts"
+    return
+  fi
+  if command -v python3 &>/dev/null; then
+    python3 -c "
+from datetime import datetime, timezone, timedelta
+import zoneinfo
+ts='${utc_ts}'.replace('Z','')
+if '.' in ts: ts=ts[:ts.index('.')]
+dt=datetime.strptime(ts,'%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)
+tz=zoneinfo.ZoneInfo('${DISPLAY_TZ}')
+local=dt.astimezone(tz)
+print(local.strftime('%Y-%m-%d %H:%M:%S'))
+" 2>/dev/null || echo "$utc_ts"
+  else
+    # fallback: 无 python3 则直接输出 UTC
+    echo "$utc_ts"
+  fi
+}
 
 find_logs() {
   for dir in "/tmp/openclaw" "$HOME/.openclaw/logs" "/var/log/openclaw"; do
@@ -43,9 +81,13 @@ else
   echo "❌ 路径不存在: $LOG_INPUT" >&2; exit 1
 fi
 
+TZ_LABEL="$DISPLAY_TZ"
+[[ "$DISPLAY_TZ" == "Asia/Shanghai" ]] && TZ_LABEL="北京时间"
+
 echo "🔍 分析 OpenClaw Gateway 重启历史..."
 echo "   日志来源: $LOG_INPUT"
 echo "   文件数量: ${#LOG_ARRAY[@]}"
+echo "   显示时区: $TZ_LABEL ($DISPLAY_TZ)"
 echo ""
 
 # --- 提取事件流（去重：同一秒同类型只保留一条） ---
@@ -98,8 +140,8 @@ json_items=()
 
 # 表头
 if ! $JSON_OUTPUT; then
-  printf "%-4s  %-26s  %-26s  %-14s  %s\n" "#" "⏹ 关闭时间 (UTC)" "▶ 启动时间 (UTC)" "类型" "触发原因"
-  printf "%-4s  %-26s  %-26s  %-14s  %s\n" "----" "--------------------------" "--------------------------" "--------------" "------------------------------------"
+  printf "%-4s  %-22s  %-22s  %-14s  %s\n" "#" "⏹ 关闭时间 ($TZ_LABEL)" "▶ 启动时间 ($TZ_LABEL)" "类型" "触发原因"
+  printf "%-4s  %-22s  %-22s  %-14s  %s\n" "----" "----------------------" "----------------------" "--------------" "------------------------------------"
 fi
 
 shutdown_ts=""
@@ -114,12 +156,13 @@ while IFS='|' read -r etype ts reason _location; do
     RELOAD)
       # hot reload 不需要重启，单独记录
       restart_num=$((restart_num + 1))
+      local_ts=$(to_display_tz "$ts")
       if $JSON_OUTPUT; then
-        json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","type":"HOT_RELOAD","reason":"%s","downtime":"0s"}' \
-          "$restart_num" "$ts" "$reason")")
+        json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","startup_utc":"%s","type":"HOT_RELOAD","reason":"%s","downtime":"0s"}' \
+          "$restart_num" "$local_ts" "$ts" "$reason")")
       else
-        printf "%-4d  %-26s  %-26s  %-14s  %s\n" \
-          "$restart_num" "-" "$ts" "🔄 HOT_RELOAD" "$reason"
+        printf "%-4d  %-22s  %-22s  %-14s  %s\n" \
+          "$restart_num" "-" "$local_ts" "🔄 HOT_RELOAD" "$reason"
       fi
       ;;
     SHUTDOWN|CRASH)
@@ -134,16 +177,18 @@ while IFS='|' read -r etype ts reason _location; do
       ;;
     STARTUP)
       restart_num=$((restart_num + 1))
+      local_startup=$(to_display_tz "$ts")
       if [[ -z "$shutdown_ts" ]]; then
         # 没有对应的 shutdown = 初始启动或日志不完整
         if $JSON_OUTPUT; then
-          json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","type":"INITIAL","reason":"initial boot or log gap","downtime":null}' \
-            "$restart_num" "$ts")")
+          json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","startup_utc":"%s","type":"INITIAL","reason":"initial boot or log gap","downtime":null}' \
+            "$restart_num" "$local_startup" "$ts")")
         else
-          printf "%-4d  %-26s  %-26s  %-14s  %s\n" \
-            "$restart_num" "-" "$ts" "🟢 INITIAL" "initial boot"
+          printf "%-4d  %-22s  %-22s  %-14s  %s\n" \
+            "$restart_num" "-" "$local_startup" "🟢 INITIAL" "initial boot"
         fi
       else
+        local_shutdown=$(to_display_tz "$shutdown_ts")
         # 计算停机时间
         if command -v python3 &>/dev/null; then
           downtime=$(python3 -c "
@@ -159,11 +204,11 @@ print(f'{d}s' if d<60 else f'{d//60}m{d%60}s')
         fi
 
         if $JSON_OUTPUT; then
-          json_items+=("$(printf '{"num":%d,"shutdown":"%s","startup":"%s","type":"%s","reason":"%s","downtime":"%s"}' \
-            "$restart_num" "$shutdown_ts" "$ts" "$restart_type" "$trigger_reason" "$downtime")")
+          json_items+=("$(printf '{"num":%d,"shutdown":"%s","shutdown_utc":"%s","startup":"%s","startup_utc":"%s","type":"%s","reason":"%s","downtime":"%s"}' \
+            "$restart_num" "$local_shutdown" "$shutdown_ts" "$local_startup" "$ts" "$restart_type" "$trigger_reason" "$downtime")")
         else
-          printf "%-4d  %-26s  %-26s  %-14s  %s (停机 %s)\n" \
-            "$restart_num" "$shutdown_ts" "$ts" "$restart_type" "$trigger_reason" "$downtime"
+          printf "%-4d  %-22s  %-22s  %-14s  %s (停机 %s)\n" \
+            "$restart_num" "$local_shutdown" "$local_startup" "$restart_type" "$trigger_reason" "$downtime"
         fi
       fi
       # 重置状态
@@ -178,11 +223,13 @@ done <<< "$events"
 if [[ -n "$shutdown_ts" ]]; then
   restart_num=$((restart_num + 1))
   if $JSON_OUTPUT; then
-    json_items+=("$(printf '{"num":%d,"shutdown":"%s","startup":null,"type":"%s","reason":"%s (⚠️ 未恢复)","downtime":null}' \
-      "$restart_num" "$shutdown_ts" "$restart_type" "$trigger_reason")")
+    local_shutdown=$(to_display_tz "$shutdown_ts")
+    json_items+=("$(printf '{"num":%d,"shutdown":"%s","shutdown_utc":"%s","startup":null,"type":"%s","reason":"%s (⚠️ 未恢复)","downtime":null}' \
+      "$restart_num" "$local_shutdown" "$shutdown_ts" "$restart_type" "$trigger_reason")")
   else
-    printf "%-4d  %-26s  %-26s  %-14s  %s\n" \
-      "$restart_num" "$shutdown_ts" "⚠️  未恢复!" "$restart_type" "$trigger_reason"
+    local_shutdown=$(to_display_tz "$shutdown_ts")
+    printf "%-4d  %-22s  %-22s  %-14s  %s\n" \
+      "$restart_num" "$local_shutdown" "⚠️  未恢复!" "$restart_type" "$trigger_reason"
   fi
 fi
 
