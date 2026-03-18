@@ -9,12 +9,10 @@
 #   ./gateway-restarts.sh --json                   # JSON output
 #   ./gateway-restarts.sh --tz Asia/Shanghai       # set timezone (default: Asia/Shanghai)
 #   ./gateway-restarts.sh --utc                    # use UTC
-#   ./gateway-restarts.sh --no-reload              # hide HOT_RELOAD entries
 
 set -uo pipefail
 
 JSON_OUTPUT=false
-NO_RELOAD=false
 LOG_INPUT=""
 DISPLAY_TZ="Asia/Shanghai"
 
@@ -22,8 +20,7 @@ for arg in "$@"; do
   case "$arg" in
     --json) JSON_OUTPUT=true ;;
     --utc) DISPLAY_TZ="UTC" ;;
-    --no-reload) NO_RELOAD=true ;;
-    --tz) :;; # next arg handled below
+    --tz) :;;
     *) 
       if [[ "${prev_arg:-}" == "--tz" ]]; then
         DISPLAY_TZ="$arg"
@@ -37,7 +34,6 @@ done
 
 # --- utils ---
 
-# UTC -> display timezone conversion
 to_display_tz() {
   local utc_ts="$1"
   [[ -z "$utc_ts" ]] && echo "-" && return
@@ -59,7 +55,6 @@ print(dt.astimezone(tz).strftime('%Y-%m-%d %H:%M:%S'))
   fi
 }
 
-# calculate downtime
 calc_downtime() {
   local t1="$1" t2="$2"
   if command -v python3 &>/dev/null; then
@@ -103,32 +98,30 @@ fi
 TZ_LABEL="$DISPLAY_TZ"
 [[ "$DISPLAY_TZ" == "Asia/Shanghai" ]] && TZ_LABEL="CST"
 
-# --- extract events ---
+# --- extract events (restarts only, no hot reload) ---
 
 extract_events() {
   for f in "${LOG_ARRAY[@]}"; do
+    # SIGTERM shutdown
     grep -n '"received SIGTERM; shutting down"' "$f" 2>/dev/null | while IFS=: read -r _ rest; do
       ts=$(echo "$rest" | grep -oP '"date":"\K[^"]+' | head -1)
       [[ -n "$ts" ]] && echo "SHUTDOWN|${ts}|SIGTERM|$f"
     done
 
+    # config change that requires restart (not hot reload)
     grep -n 'config change requires gateway restart' "$f" 2>/dev/null | while IFS=: read -r _ rest; do
       ts=$(echo "$rest" | grep -oP '"date":"\K[^"]+' | head -1)
       detail=$(echo "$rest" | grep -oP 'config change requires gateway restart \(\K[^)]+' | head -1)
       [[ -n "$ts" ]] && echo "TRIGGER|${ts}|${detail}|$f"
     done
 
-    grep -n 'config change detected; evaluating reload' "$f" 2>/dev/null | while IFS=: read -r _ rest; do
-      ts=$(echo "$rest" | grep -oP '"date":"\K[^"]+' | head -1)
-      detail=$(echo "$rest" | grep -oP 'evaluating reload \(\K[^)]+' | head -1)
-      [[ -n "$ts" ]] && echo "RELOAD|${ts}|${detail}|$f"
-    done
-
+    # heartbeat started = process startup marker
     grep -n '"heartbeat: started"' "$f" 2>/dev/null | while IFS=: read -r _ rest; do
       ts=$(echo "$rest" | grep -oP '"date":"\K[^"]+' | head -1)
       [[ -n "$ts" ]] && echo "STARTUP|${ts}|heartbeat started|$f"
     done
 
+    # crash signals
     grep -n 'uncaughtException\|unhandledRejection\|ENOMEM\|SIGKILL\|out of memory' "$f" 2>/dev/null | while IFS=: read -r _ rest; do
       ts=$(echo "$rest" | grep -oP '"date":"\K[^"]+' | head -1)
       [[ -n "$ts" ]] && echo "CRASH|${ts}|crash/OOM|$f"
@@ -146,7 +139,7 @@ fi
 # --- output ---
 
 echo "┌──────────────────────────────────────────────────────────────────────────────────┐"
-echo "│  🔍 OpenClaw Gateway Restart History                                               │"
+echo "│  OpenClaw Gateway Restart History                                                │"
 echo "│                                                                                  │"
 echo "│  Logs: $LOG_INPUT"
 echo "│  Timezone: $TZ_LABEL ($DISPLAY_TZ)"
@@ -158,24 +151,18 @@ json_items=()
 shutdown_ts=""
 trigger_reason=""
 restart_type=""
-restart_type_cn=""
-count_initial=0
-count_restart=0
-count_reload=0
 
 print_entry() {
-  local num="$1" down_time="$2" up_time="$3" type_cn="$4" reason="$5" downtime="${6:-}"
+  local num="$1" down_time="$2" up_time="$3" type="$4" reason="$5" downtime="${6:-}"
 
-  if [[ "$num" -gt 1 ]]; then
-    echo "  │"
-  fi
+  [[ "$num" -gt 1 ]] && echo "  │"
 
   local downtime_str=""
   [[ -n "$downtime" ]] && downtime_str=" downtime $downtime"
 
-  printf "  %-3d  %s\n" "$num" "$type_cn$downtime_str"
+  printf "  %-3d  %s\n" "$num" "$type$downtime_str"
   [[ "$down_time" != "-" ]] && echo "       Down: $down_time"
-  [[ "$up_time" != "-" ]]   && echo "       Up: $up_time"
+  [[ "$up_time" != "-" ]]   && echo "       Up:   $up_time"
   echo "       Reason: $reason"
 }
 
@@ -184,27 +171,13 @@ while IFS='|' read -r etype ts reason _location; do
     TRIGGER)
       trigger_reason="$reason"
       ;;
-    RELOAD)
-      if $NO_RELOAD; then continue; fi
-      restart_num=$((restart_num + 1))
-      count_reload=$((count_reload + 1))
-      local_ts=$(to_display_tz "$ts")
-      if $JSON_OUTPUT; then
-        json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","startup_utc":"%s","type":"HOT_RELOAD","reason":"%s","downtime":"0s"}' \
-          "$restart_num" "$local_ts" "$ts" "$reason")")
-      else
-        print_entry "$restart_num" "-" "$local_ts" "HOT_RELOAD" "$reason"
-      fi
-      ;;
     SHUTDOWN|CRASH)
       shutdown_ts="$ts"
       if [[ "$etype" == "CRASH" ]]; then
         restart_type="CRASH"
-        restart_type_cn="CRASH"
         trigger_reason="$reason"
       else
         restart_type="SIGTERM"
-        restart_type_cn="SIGTERM"
         [[ -z "$trigger_reason" ]] && trigger_reason="manual/systemd"
       fi
       ;;
@@ -212,7 +185,6 @@ while IFS='|' read -r etype ts reason _location; do
       restart_num=$((restart_num + 1))
       local_startup=$(to_display_tz "$ts")
       if [[ -z "$shutdown_ts" ]]; then
-        count_initial=$((count_initial + 1))
         if $JSON_OUTPUT; then
           json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","startup_utc":"%s","type":"INITIAL","reason":"initial boot","downtime":null}' \
             "$restart_num" "$local_startup" "$ts")")
@@ -220,7 +192,6 @@ while IFS='|' read -r etype ts reason _location; do
           print_entry "$restart_num" "-" "$local_startup" "INITIAL" "initial boot"
         fi
       else
-        count_restart=$((count_restart + 1))
         local_shutdown=$(to_display_tz "$shutdown_ts")
         downtime=$(calc_downtime "$shutdown_ts" "$ts")
 
@@ -228,13 +199,12 @@ while IFS='|' read -r etype ts reason _location; do
           json_items+=("$(printf '{"num":%d,"shutdown":"%s","shutdown_utc":"%s","startup":"%s","startup_utc":"%s","type":"%s","reason":"%s","downtime":"%s"}' \
             "$restart_num" "$local_shutdown" "$shutdown_ts" "$local_startup" "$ts" "$restart_type" "$trigger_reason" "$downtime")")
         else
-          print_entry "$restart_num" "$local_shutdown" "$local_startup" "$restart_type_cn" "$trigger_reason" "$downtime"
+          print_entry "$restart_num" "$local_shutdown" "$local_startup" "$restart_type" "$trigger_reason" "$downtime"
         fi
       fi
       shutdown_ts=""
       trigger_reason=""
       restart_type=""
-      restart_type_cn=""
       ;;
   esac
 done <<< "$events"
@@ -247,7 +217,7 @@ if [[ -n "$shutdown_ts" ]]; then
     json_items+=("$(printf '{"num":%d,"shutdown":"%s","shutdown_utc":"%s","startup":null,"type":"%s","reason":"%s","downtime":null}' \
       "$restart_num" "$local_shutdown" "$shutdown_ts" "$restart_type" "$trigger_reason")")
   else
-    print_entry "$restart_num" "$local_shutdown" "⚠️  NOT RECOVERED" "$restart_type_cn" "$trigger_reason"
+    print_entry "$restart_num" "$local_shutdown" "NOT RECOVERED" "$restart_type" "$trigger_reason"
   fi
 fi
 
@@ -266,7 +236,7 @@ fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  📊 Total: $restart_num records (initial ${count_initial}, restart ${count_restart}, hot_reload ${count_reload})"
+echo "  Total: $restart_num restarts"
 
 # systemd info
 if command -v systemctl &>/dev/null; then
@@ -274,7 +244,7 @@ if command -v systemctl &>/dev/null; then
     active_since=$(systemctl --user show "$svc" --property=ActiveEnterTimestamp 2>/dev/null | cut -d= -f2 || true)
     pid=$(systemctl --user show "$svc" --property=MainPID 2>/dev/null | cut -d= -f2 || true)
     if [[ -n "$active_since" ]] && [[ "$pid" != "0" ]] && [[ -n "$pid" ]]; then
-      echo "  📋 Current process: PID $pid, started at $active_since"
+      echo "  Current process: PID $pid, started at $active_since"
       break
     fi
   done
