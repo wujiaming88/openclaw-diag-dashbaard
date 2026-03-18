@@ -189,18 +189,18 @@ while IFS='|' read -r etype ts reason _location; do
         json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","startup_utc":"%s","type":"HOT_RELOAD","reason":"%s","downtime":"0s"}' \
           "$restart_num" "$local_ts" "$ts" "$reason")")
       else
-        print_entry "$restart_num" "-" "$local_ts" "🔄 热重载" "$reason"
+        print_entry "$restart_num" "-" "$local_ts" "HOT_RELOAD" "$reason"
       fi
       ;;
     SHUTDOWN|CRASH)
       shutdown_ts="$ts"
       if [[ "$etype" == "CRASH" ]]; then
         restart_type="CRASH"
-        restart_type_cn="💥 崩溃"
+        restart_type_cn="CRASH"
         trigger_reason="$reason"
       else
         restart_type="SIGTERM"
-        restart_type_cn="⏹ SIGTERM"
+        restart_type_cn="SIGTERM"
         [[ -z "$trigger_reason" ]] && trigger_reason="manual/systemd"
       fi
       ;;
@@ -213,7 +213,7 @@ while IFS='|' read -r etype ts reason _location; do
           json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","startup_utc":"%s","type":"INITIAL","reason":"initial boot","downtime":null}' \
             "$restart_num" "$local_startup" "$ts")")
         else
-          print_entry "$restart_num" "-" "$local_startup" "🟢 首次启动" "initial boot"
+          print_entry "$restart_num" "-" "$local_startup" "INITIAL" "initial boot"
         fi
       else
         count_restart=$((count_restart + 1))
