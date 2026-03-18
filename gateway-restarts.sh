@@ -156,6 +156,9 @@ shutdown_ts=""
 trigger_reason=""
 restart_type=""
 restart_type_cn=""
+count_initial=0
+count_restart=0
+count_reload=0
 
 print_entry() {
   local num="$1" down_time="$2" up_time="$3" type_cn="$4" reason="$5" downtime="${6:-}"
@@ -180,6 +183,7 @@ while IFS='|' read -r etype ts reason _location; do
       ;;
     RELOAD)
       restart_num=$((restart_num + 1))
+      count_reload=$((count_reload + 1))
       local_ts=$(to_display_tz "$ts")
       if $JSON_OUTPUT; then
         json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","startup_utc":"%s","type":"HOT_RELOAD","reason":"%s","downtime":"0s"}' \
@@ -204,6 +208,7 @@ while IFS='|' read -r etype ts reason _location; do
       restart_num=$((restart_num + 1))
       local_startup=$(to_display_tz "$ts")
       if [[ -z "$shutdown_ts" ]]; then
+        count_initial=$((count_initial + 1))
         if $JSON_OUTPUT; then
           json_items+=("$(printf '{"num":%d,"shutdown":null,"startup":"%s","startup_utc":"%s","type":"INITIAL","reason":"initial boot","downtime":null}' \
             "$restart_num" "$local_startup" "$ts")")
@@ -211,6 +216,7 @@ while IFS='|' read -r etype ts reason _location; do
           print_entry "$restart_num" "-" "$local_startup" "🟢 首次启动" "initial boot"
         fi
       else
+        count_restart=$((count_restart + 1))
         local_shutdown=$(to_display_tz "$shutdown_ts")
         downtime=$(calc_downtime "$shutdown_ts" "$ts")
 
@@ -256,7 +262,7 @@ fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  📊 总计: $restart_num 次启动/重启/热重载"
+echo "  📊 总计: $restart_num 条记录 (首次启动 ${count_initial}, 重启 ${count_restart}, 热重载 ${count_reload})"
 
 # systemd 补充信息
 if command -v systemctl &>/dev/null; then
