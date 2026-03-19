@@ -1,5 +1,5 @@
 #!/bin/bash
-# OpenClaw 诊断日志解析工具 v2.5
+# OpenClaw 诊断日志解析工具 v3.0
 # 用法:
 #   ./openclaw-diag.sh              # 解析今天的日志
 #   ./openclaw-diag.sh 2026-03-11   # 解析指定日期
@@ -288,6 +288,8 @@ def extract_tool_summary(name, args):
 if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
     for sf in glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl")):
         try:
+            # 每个 session 文件独立跟踪 prev_top_timestamp
+            prev_top_timestamp = ""
             with open(sf) as f:
                 for line in f:
                     try:
@@ -297,12 +299,34 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                         msg = obj.get("message", {})
                         content = msg.get("content", [])
                         if not isinstance(content, list):
-                            continue
+                            content = []
 
                         role = msg.get("role", "")
                         usage = msg.get("usage", {})
                         model = msg.get("model", "")
                         timestamp = obj.get("timestamp", "")
+
+                        # delivery-mirror: 记录 timestamp 但跳过后续处理
+                        if role == "assistant" and model == "delivery-mirror":
+                            if timestamp:
+                                prev_top_timestamp = timestamp
+                            continue
+
+                        # user 消息: 记录 timestamp
+                        if role == "user":
+                            if timestamp:
+                                prev_top_timestamp = timestamp
+                            continue
+
+                        # toolResult 消息: 记录 timestamp
+                        if role == "toolResult":
+                            if timestamp:
+                                prev_top_timestamp = timestamp
+                            continue
+
+                        # 以下仅处理 assistant 消息 (非 delivery-mirror)
+                        if role != "assistant":
+                            continue
 
                         # 收集 toolCall 参数
                         tool_ids_in_msg = []
@@ -326,8 +350,24 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                                 }
                                 tool_ids_in_msg.append(tid)
 
+                        # 计算 per-call 推理耗时 (与 Python dashboard 一致)
+                        inference_ms = 0
+                        tokens_per_sec = 0.0
+                        if prev_top_timestamp and timestamp:
+                            try:
+                                cur_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                                prev_dt = datetime.fromisoformat(prev_top_timestamp.replace("Z", "+00:00"))
+                                delta = (cur_dt - prev_dt).total_seconds() * 1000
+                                if delta > 0:
+                                    inference_ms = round(delta)
+                                    output_tokens = usage.get("output", 0) if isinstance(usage, dict) else 0
+                                    if output_tokens > 0 and inference_ms > 0:
+                                        tokens_per_sec = round(output_tokens / (inference_ms / 1000), 1)
+                            except (ValueError, TypeError):
+                                pass
+
                         # 收集每次推理的 usage (仅 assistant, 非 delivery-mirror)
-                        if role == "assistant" and usage and model != "delivery-mirror":
+                        if usage:
                             usage_record = {
                                 "input": usage.get("input", 0),
                                 "output": usage.get("output", 0),
@@ -337,13 +377,13 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                                 "cost": usage.get("cost", {}),
                                 "timestamp": timestamp,
                                 "tool_ids": tool_ids_in_msg,
+                                "inference_ms": inference_ms,
+                                "tokens_per_sec": tokens_per_sec,
                             }
                             if tool_ids_in_msg:
-                                # 用第一个 toolCallId 作为 key, 每个 id 都指向同一条
                                 for tid in tool_ids_in_msg:
                                     inference_usage[tid] = usage_record
                             else:
-                                # 纯文本回复, 按时间戳记录
                                 text_reply_usage.append((timestamp, usage_record))
 
                     except:
@@ -600,6 +640,46 @@ if model_times:
     max_model = max(model_times)
     print(f"  模型推理:    平均 {fmt_duration(avg_model)}  最长 {fmt_duration(max_model)}")
 
+# 从 session-based per-call 数据计算平均推理延迟和吞吐量
+all_inference_ms = []
+all_tokens_per_sec = []
+for u in inference_usage.values():
+    if u.get("inference_ms", 0) > 0:
+        all_inference_ms.append(u["inference_ms"])
+    if u.get("tokens_per_sec", 0) > 0:
+        all_tokens_per_sec.append(u["tokens_per_sec"])
+for _, u in text_reply_usage:
+    if u.get("inference_ms", 0) > 0:
+        all_inference_ms.append(u["inference_ms"])
+    if u.get("tokens_per_sec", 0) > 0:
+        all_tokens_per_sec.append(u["tokens_per_sec"])
+# 去重 (同一 usage_record 可能被多个 toolCallId 引用)
+seen_ids = set()
+dedup_inference_ms = []
+dedup_tokens_per_sec = []
+for u in inference_usage.values():
+    if id(u) in seen_ids:
+        continue
+    seen_ids.add(id(u))
+    if u.get("inference_ms", 0) > 0:
+        dedup_inference_ms.append(u["inference_ms"])
+    if u.get("tokens_per_sec", 0) > 0:
+        dedup_tokens_per_sec.append(u["tokens_per_sec"])
+for _, u in text_reply_usage:
+    if id(u) in seen_ids:
+        continue
+    seen_ids.add(id(u))
+    if u.get("inference_ms", 0) > 0:
+        dedup_inference_ms.append(u["inference_ms"])
+    if u.get("tokens_per_sec", 0) > 0:
+        dedup_tokens_per_sec.append(u["tokens_per_sec"])
+if dedup_inference_ms:
+    avg_inf = sum(dedup_inference_ms) / len(dedup_inference_ms)
+    print(f"  推理延迟:    平均 {fmt_duration(avg_inf)}  (基于 session 时间戳, {len(dedup_inference_ms)} 次调用)")
+if dedup_tokens_per_sec:
+    avg_tps = sum(dedup_tokens_per_sec) / len(dedup_tokens_per_sec)
+    print(f"  Token 吞吐:  平均 {avg_tps:.1f} tok/s  (基于 session 时间戳, {len(dedup_tokens_per_sec)} 次调用)")
+
 if tool_times:
     avg_tool = sum(tool_times) / len(tool_times)
     max_tool = max(tool_times)
@@ -852,26 +932,64 @@ for i, (run_id, r) in enumerate(sorted_runs):
         if total_tool > 0:
             print(f"      工具执行 {bar(total_tool, total_ms)}  {fmt_duration(total_tool):>8}")
 
-    # 推理分段明细 (含 token)
+    # 推理分段明细 (优先使用 session-based per-call inference_ms)
     if per_inference:
         print()
         print(f"    推理分段明细:")
-        print(f"      {'段':^24} {'耗时':>8} {'输出token':>10} {'速率':>12}")
-        print(f"      {'─'*24} {'─'*8} {'─'*10} {'─'*12}")
+        print(f"      {'段':^24} {'耗时':>8} {'输出token':>10} {'速率':>12} {'来源':>6}")
+        print(f"      {'─'*24} {'─'*8} {'─'*10} {'─'*12} {'─'*6}")
         for label, ms, usage_rec in per_inference:
-            dur_str = fmt_duration(ms) if ms > 0 else "-"
+            # 尝试从 session-based per-call 数据获取更精确的 inference_ms
+            session_ms = 0
+            session_tps = 0.0
+            source = "log"
             if usage_rec:
                 out_tok = usage_rec["output"]
-                out_str = str(out_tok)
-                if ms > 0 and out_tok > 0:
-                    rate = out_tok / (ms / 1000)
-                    rate_str = f"{rate:.1f} tok/s"
+                # 查找 session-based per-call 数据
+                # 通过 tool_indices -> tool_id -> inference_usage 获取
+                found_session_data = False
+                for seg_label, seg_ms, seg_tool_indices in segments:
+                    if seg_label == label:
+                        for ti in seg_tool_indices:
+                            if ti < len(r["tools"]):
+                                tool = r["tools"][ti]
+                                urec = inference_usage.get(tool["id"])
+                                if urec and urec.get("inference_ms", 0) > 0:
+                                    session_ms = urec["inference_ms"]
+                                    session_tps = urec.get("tokens_per_sec", 0)
+                                    found_session_data = True
+                                    break
+                        if not found_session_data and not seg_tool_indices and "(生成回复)" in label:
+                            # text reply: search in text_reply_usage
+                            if r["end"] and r["start"]:
+                                for ts_str, u in text_reply_usage:
+                                    if ts_str[:19] >= r["start"][:19] and ts_str[:19] <= r["end"][:19]:
+                                        if u.get("inference_ms", 0) > 0:
+                                            session_ms = u["inference_ms"]
+                                            session_tps = u.get("tokens_per_sec", 0)
+                                            found_session_data = True
+                                            break
+                        break
+
+                if found_session_data and session_ms > 0:
+                    dur_str = fmt_duration(session_ms)
+                    out_str = str(out_tok)
+                    rate_str = f"{session_tps:.1f} tok/s" if session_tps > 0 else "-"
+                    source = "sess"
                 else:
-                    rate_str = "-"
+                    dur_str = fmt_duration(ms) if ms > 0 else "-"
+                    out_str = str(out_tok)
+                    if ms > 0 and out_tok > 0:
+                        rate = out_tok / (ms / 1000)
+                        rate_str = f"{rate:.1f} tok/s"
+                    else:
+                        rate_str = "-"
+                    source = "log"
             else:
+                dur_str = fmt_duration(ms) if ms > 0 else "-"
                 out_str = "(未知)"
                 rate_str = "-"
-            print(f"      {label:<24} {dur_str:>8} {out_str:>10} {rate_str:>12}")
+            print(f"      {label:<24} {dur_str:>8} {out_str:>10} {rate_str:>12} {source:>6}")
 
 # ============================================================
 # 6. 错误列表
