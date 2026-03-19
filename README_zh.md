@@ -4,6 +4,82 @@
 
 > **v3.0** — Session 优先架构。所有推理耗时、Token 统计和工具分析均纯粹由 `session.jsonl` 数据驱动，标准模式无需配置 debug 日志。
 
+## 📸 效果展示
+
+### 标准模式 — KPI 概览
+
+![Dashboard Overview](docs/screenshots/dashboard-overview.png)
+
+*3 行 KPI 卡片：核心指标（模型调用数、推理延迟、Token 吞吐量、缓存命中率）、Token 详情、工具与 Thinking 统计。下方为 6 项系统探测面板。*
+
+### 标准模式 — Gateway 与会话浏览
+
+![Dashboard Details](docs/screenshots/dashboard-tools.png)
+
+*Gateway 重启历史（事件类型检测）、模型调用记录、会话浏览器。标准模式零配置即可使用。*
+
+### 系统探测面板
+
+![Dashboard Probes](docs/screenshots/dashboard-probes.png)
+
+*6 项内置探测（健康检查、Gateway 状态、配置校验、全面诊断、版本状态、模型状态），支持一键全部执行，实时显示执行状态。*
+
+### 高级诊断模式
+
+![Dashboard Advanced](docs/screenshots/dashboard-advanced.png)
+
+*高级模式在标准模式基础上，额外提供 Run 级别 KPI（Run 总数、平均耗时、推理占比、消息流水线统计）。*
+
+### CLI 命令行模式
+
+```
+🦞 OpenClaw 诊断工具 v3.0.0
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🏥 健康检查 ... ✅ (9.9s)
+  Agent: 7 个 (Coordinator, Developer, Designer, Researcher, QA, ...)
+    main: 49 sessions | waicode: 8 sessions | waidesign: 4 sessions ...
+  Session 总数: 49
+
+🌐 Gateway 状态 ... ✅ (12.0s)
+  PID: 806521 | 端口: 18789 (loopback) | 状态: active/running | RPC: ✅ 正常
+
+✅ 配置校验 ... ✅ (4.3s)
+  Config valid: ~/.openclaw/openclaw.json
+
+🔬 全面诊断 ... ✅ (17.9s)
+  ┌  OpenClaw doctor
+  ◇  Startup optimization ──────────────────────────────────╮
+  │  - NODE_COMPILE_CACHE is not set                        │
+  │  - OPENCLAW_NO_RESPAWN is not set to 1                  │
+  ├─────────────────────────────────────────────────────────╯
+```
+
+### Shell 脚本 — Run 诊断报告
+
+```
+[OpenClaw 诊断报告]
+日期: 2026-03-19
+
+====================================================================
+                             [摘要统计]
+====================================================================
+  Run 总数:        139
+  工具调用总数:    1237
+  工具调用:        1267 次 (失败 1, 成功率 100%)
+  工具平均耗时:    876ms
+  Top 工具:        exec(614), read(313), edit(195)
+
+  推理延迟:    平均 9.4s  (基于 session 时间戳, 1304 次调用)
+  Token 吞吐:  平均 32.4 tok/s  (基于 session 时间戳, 1295 次调用)
+
+  工具使用排行:
+    exec     588次  平均耗时 1.5s
+    read     311次  平均耗时 56ms
+    edit     195次  平均耗时 38ms
+    ...
+```
+
 ## 功能特性
 
 ### Web 面板 (`openclaw-dashboard.py`)
@@ -270,6 +346,8 @@ openclaw-diag-dashbaard/
 │   ├── index.html          # 面板布局
 │   ├── app.js              # 前端逻辑（1400+ 行）
 │   └── style.css           # 暗色主题样式
+├── docs/
+│   └── screenshots/        # 面板截图
 ├── README.md               # English documentation
 └── README_zh.md            # 中文文档
 ```

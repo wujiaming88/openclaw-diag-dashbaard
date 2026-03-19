@@ -4,6 +4,82 @@ A web-based performance diagnostic tool for the [OpenClaw](https://github.com/ni
 
 > **v3.0** — Session-first architecture. All inference timing, token stats, and tool analytics are driven purely by `session.jsonl` data. No debug log configuration needed for standard mode.
 
+## 📸 Screenshots
+
+### Standard Mode — KPI Overview
+
+![Dashboard Overview](docs/screenshots/dashboard-overview.png)
+
+*3 rows of KPI cards: core metrics (model calls, inference latency, token throughput, cache hit ratio), token details, and tool/thinking stats. Probe panel with 6 one-click diagnostics.*
+
+### Standard Mode — Gateway & Session Browser
+
+![Dashboard Details](docs/screenshots/dashboard-tools.png)
+
+*Gateway restart history with event type detection, model call records, and session browser. Standard mode requires zero configuration.*
+
+### System Probes
+
+![Dashboard Probes](docs/screenshots/dashboard-probes.png)
+
+*6 built-in probes (health, gateway status, config validate, full doctor, update status, models status) with live execution status and one-click "Run All".*
+
+### Advanced Mode — Full Diagnostics
+
+![Dashboard Advanced](docs/screenshots/dashboard-advanced.png)
+
+*Advanced mode adds run-level KPIs (run count, avg duration, inference ratio, message pipeline stats) on top of all standard mode features.*
+
+### CLI Mode
+
+```
+🦞 OpenClaw 诊断工具 v3.0.0
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🏥 健康检查 ... ✅ (9.9s)
+  Agent: 7 个 (Coordinator, Developer, Designer, Researcher, QA, ...)
+    main: 49 sessions | waicode: 8 sessions | waidesign: 4 sessions ...
+  Session 总数: 49
+
+🌐 Gateway 状态 ... ✅ (12.0s)
+  PID: 806521 | 端口: 18789 (loopback) | 状态: active/running | RPC: ✅ 正常
+
+✅ 配置校验 ... ✅ (4.3s)
+  Config valid: ~/.openclaw/openclaw.json
+
+🔬 全面诊断 ... ✅ (17.9s)
+  ┌  OpenClaw doctor
+  ◇  Startup optimization ──────────────────────────────────╮
+  │  - NODE_COMPILE_CACHE is not set                        │
+  │  - OPENCLAW_NO_RESPAWN is not set to 1                  │
+  ├─────────────────────────────────────────────────────────╯
+```
+
+### Shell Script — Run Diagnostics
+
+```
+[OpenClaw 诊断报告]
+日期: 2026-03-19
+
+====================================================================
+                             [摘要统计]
+====================================================================
+  Run 总数:        139
+  工具调用总数:    1237
+  工具调用:        1267 次 (失败 1, 成功率 100%)
+  工具平均耗时:    876ms
+  Top 工具:        exec(614), read(313), edit(195)
+
+  推理延迟:    平均 9.4s  (基于 session 时间戳, 1304 次调用)
+  Token 吞吐:  平均 32.4 tok/s  (基于 session 时间戳, 1295 次调用)
+
+  工具使用排行:
+    exec     588次  平均耗时 1.5s
+    read     311次  平均耗时 56ms
+    edit     195次  平均耗时 38ms
+    ...
+```
+
 ## Features
 
 ### Web Dashboard (`openclaw-dashboard.py`)
@@ -270,6 +346,8 @@ openclaw-diag-dashbaard/
 │   ├── index.html          # Dashboard layout
 │   ├── app.js              # Frontend logic (1400+ lines)
 │   └── style.css           # Dark theme styles
+├── docs/
+│   └── screenshots/        # Dashboard screenshots
 ├── README.md               # English documentation
 └── README_zh.md            # 中文文档
 ```
