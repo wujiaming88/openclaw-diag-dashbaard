@@ -58,18 +58,62 @@ function fmtDowntime(sec) {
 
 function fmtShortTs(isoStr) {
   if (!isoStr) return '-';
-  var m = isoStr.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-  if (!m) return isoStr;
-  return m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] + ':' + m[6];
+  try {
+    var d = new Date(isoStr);
+    if (isNaN(d.getTime())) throw 'invalid';
+    var bj = new Date(d.getTime() + 8 * 3600000);
+    var mo = String(bj.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(bj.getUTCDate()).padStart(2, '0');
+    var hh = String(bj.getUTCHours()).padStart(2, '0');
+    var mm = String(bj.getUTCMinutes()).padStart(2, '0');
+    var ss = String(bj.getUTCSeconds()).padStart(2, '0');
+    return mo + '-' + dd + ' ' + hh + ':' + mm + ':' + ss;
+  } catch (e) {
+    var m = isoStr.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    if (!m) return isoStr;
+    return m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] + ':' + m[6];
+  }
 }
 
 function fmtTime(isoStr) {
   if (!isoStr) return '';
-  if (isoStr.indexOf('T') > -1) {
-    var t = isoStr.split('T')[1] || isoStr;
-    return t.length > 12 ? t.substring(0, 12) : t;
+  try {
+    // 解析为 Date 对象（自动处理 Z / +00:00 / +08:00 等时区）
+    var d = new Date(isoStr);
+    if (isNaN(d.getTime())) throw 'invalid';
+    // 转为北京时间显示（UTC+8）
+    var bj = new Date(d.getTime() + 8 * 3600000);
+    var hh = String(bj.getUTCHours()).padStart(2, '0');
+    var mm = String(bj.getUTCMinutes()).padStart(2, '0');
+    var ss = String(bj.getUTCSeconds()).padStart(2, '0');
+    var ms = String(bj.getUTCMilliseconds()).padStart(3, '0');
+    return hh + ':' + mm + ':' + ss + '.' + ms;
+  } catch (e) {
+    // fallback: 原始截取
+    if (isoStr.indexOf('T') > -1) {
+      var t = isoStr.split('T')[1] || isoStr;
+      return t.length > 12 ? t.substring(0, 12) : t;
+    }
+    return isoStr;
   }
-  return isoStr;
+}
+
+function fmtDateTime(isoStr) {
+  if (!isoStr) return '';
+  try {
+    var d = new Date(isoStr);
+    if (isNaN(d.getTime())) throw 'invalid';
+    var bj = new Date(d.getTime() + 8 * 3600000);
+    var yyyy = bj.getUTCFullYear();
+    var mo = String(bj.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(bj.getUTCDate()).padStart(2, '0');
+    var hh = String(bj.getUTCHours()).padStart(2, '0');
+    var mm = String(bj.getUTCMinutes()).padStart(2, '0');
+    var ss = String(bj.getUTCSeconds()).padStart(2, '0');
+    return yyyy + '-' + mo + '-' + dd + ' ' + hh + ':' + mm + ':' + ss;
+  } catch (e) {
+    return isoStr;
+  }
 }
 
 function speedClass(ms) {
@@ -532,7 +576,7 @@ function renderErrors(data) {
     var shortDetail = detail.length > 120 ? detail.substring(0, 120) + '...' : detail;
 
     html += '<tr class="' + sevCls + '" onclick="toggleErrorDetail(' + idx + ')" style="cursor:pointer">';
-    html += '<td style="white-space:nowrap">' + escHtml(e.time || '') + '</td>';
+    html += '<td style="white-space:nowrap">' + fmtTime(e.time || '') + '</td>';
     html += '<td><span class="error-type-tag ' + tagCls + '">' + sevLabel + '</span></td>';
     html += '<td><span class="error-type-tag">' + escHtml(e.type || '') + '</span></td>';
     html += '<td class="error-subsystem">' + escHtml(e.subsystem || '') + '</td>';
@@ -783,8 +827,8 @@ function renderRunList(data) {
     var short_id = r.run_id.substring(0, 8);
     var virtualTag = r.virtual ? '<span class="virtual-tag">[虚拟]</span>' : '';
     html += '<tr class="clickable" data-runid="' + escHtml(r.run_id) + '" onclick="toggleRun(this)">';
-    html += '<td class="mono">' + escHtml(r.start) + '</td>';
-    html += '<td class="mono">' + escHtml(r.end || '-') + '</td>';
+    html += '<td class="mono">' + fmtTime(r.start) + '</td>';
+    html += '<td class="mono">' + (r.end ? fmtTime(r.end) : '-') + '</td>';
     html += '<td class="mono" title="' + escHtml(r.run_id) + '">' + virtualTag + escHtml(short_id) + '</td>';
     html += '<td>' + escHtml(shortModel(r.model)) + '</td>';
     html += '<td>' + escHtml(r.channel) + '</td>';
@@ -828,8 +872,8 @@ function renderRunDetail(d, el) {
   var html = '';
 
   html += '<div style="margin-bottom:12px;font-size:13px;color:var(--text2)">';
-  html += '开始: <strong style="color:var(--text)">' + escHtml(d.start) + '</strong>';
-  html += ' &nbsp;结束: <strong style="color:var(--text)">' + escHtml(d.end || '-') + '</strong>';
+  html += '开始: <strong style="color:var(--text)">' + fmtDateTime(d.start) + '</strong>';
+  html += ' &nbsp;结束: <strong style="color:var(--text)">' + (d.end ? fmtDateTime(d.end) : '-') + '</strong>';
   html += ' &nbsp;输出速率: <strong style="color:var(--text)">' + (d.overall_tok_per_s || 0) + ' tok/s' + tipIcon('tokPerS') + '</strong>';
   html += '</div>';
 
