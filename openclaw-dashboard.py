@@ -772,6 +772,8 @@ def parse_session_files(sessions_dirs):
 
         # 跟踪上一条 user 消息 (用于 prompt)
         last_user_text = ""
+        # 跟踪前一条消息的顶层 timestamp（用于推理耗时计算）
+        prev_top_timestamp = ""
 
         for line in lines:
             line = line.strip()
@@ -805,6 +807,10 @@ def parse_session_files(sessions_dirs):
                         "text_preview": result_text[:200],
                         "isError": is_error,
                     }
+                # 记录 toolResult 的顶层 timestamp 用于推理耗时计算
+                tr_ts = obj.get("timestamp", "")
+                if tr_ts:
+                    prev_top_timestamp = tr_ts
                 continue
 
             # 跟踪 user 消息
@@ -821,12 +827,20 @@ def parse_session_files(sessions_dirs):
                     user_text = user_content
                 if user_text:
                     last_user_text = user_text
+                # 记录 user 消息的顶层 timestamp
+                u_ts = obj.get("timestamp", "")
+                if u_ts:
+                    prev_top_timestamp = u_ts
                 continue
 
             if msg.get("role") != "assistant":
                 continue
             model = msg.get("model", "")
             if model == "delivery-mirror":
+                # 记录 timestamp 但跳过 delivery-mirror
+                dm_ts = obj.get("timestamp", "")
+                if dm_ts:
+                    prev_top_timestamp = dm_ts
                 continue
             usage = msg.get("usage", {})
             timestamp = obj.get("timestamp", "")
@@ -931,8 +945,25 @@ def parse_session_files(sessions_dirs):
                     "text_preview": last_user_text[:200],
                 }
 
+            # 计算推理耗时：assistant timestamp - 前一条消息 timestamp
+            inference_ms = 0
+            if prev_top_timestamp and timestamp:
+                try:
+                    cur_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    prev_dt = datetime.fromisoformat(prev_top_timestamp.replace("Z", "+00:00"))
+                    delta = (cur_dt - prev_dt).total_seconds() * 1000
+                    if delta > 0:
+                        inference_ms = round(delta)
+                except (ValueError, TypeError):
+                    inference_ms = 0
+
+            output_tokens = usage.get("output", 0) if isinstance(usage, dict) else 0
+            tokens_per_sec = round(output_tokens / (inference_ms / 1000), 1) if inference_ms > 0 and output_tokens > 0 else 0
+
             call_record = {
                 "timestamp": timestamp,
+                "inference_ms": inference_ms,
+                "tokens_per_sec": tokens_per_sec,
                 "session_id": internal_session_id,
                 "session_id_file": fname_session_id,
                 "model": model,
@@ -963,6 +994,9 @@ def parse_session_files(sessions_dirs):
                 },
             }
             model_calls.append(call_record)
+            # 更新 prev_top_timestamp 为当前 assistant 消息的时间
+            if timestamp:
+                prev_top_timestamp = timestamp
 
     # Sort model_calls by timestamp descending
     model_calls.sort(key=lambda c: c.get("timestamp", ""), reverse=True)
@@ -1620,6 +1654,26 @@ class DataStore(object):
         avg_tok_per_s = round(total_tokens / (total_infer / 1000.0), 1) if total_infer > 0 else 0
         total_cache = total_cache_read + total_cache_write + total_input
         cache_hit_ratio = round(total_cache_read / total_cache * 100, 1) if total_cache > 0 else 0
+
+        # Session 级推理统计（基于 model_calls 的精确 inference_ms）
+        session_total_inference_ms = 0
+        session_inference_count = 0
+        session_tps_values = []
+        all_mc = self._model_calls or []
+        for mc in all_mc:
+            mc_ts = mc.get("timestamp", "")[:10]
+            if mc_ts != date:
+                continue
+            inf_ms = mc.get("inference_ms", 0)
+            if inf_ms > 0:
+                session_total_inference_ms += inf_ms
+                session_inference_count += 1
+                tps = mc.get("tokens_per_sec", 0)
+                if tps > 0:
+                    session_tps_values.append(tps)
+        session_avg_inference_ms = round(session_total_inference_ms / session_inference_count) if session_inference_count > 0 else 0
+        session_avg_tokens_per_sec = round(sum(session_tps_values) / len(session_tps_values), 1) if session_tps_values else 0
+
         return {
             "date": date,
             "total_runs": len(runs),
@@ -1636,6 +1690,10 @@ class DataStore(object):
             "error_count": error_count,
             "models": sorted(models),
             "channels": sorted(channels),
+            "session_total_inference_ms": session_total_inference_ms,
+            "session_avg_inference_ms": session_avg_inference_ms,
+            "session_avg_tokens_per_sec": session_avg_tokens_per_sec,
+            "session_inference_count": session_inference_count,
         }
 
     def get_events_summary(self, date):

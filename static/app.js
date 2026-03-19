@@ -228,6 +228,9 @@ var TIPS = {
   avgProcessTime: '消息从入队到处理完成的平均耗时。反映整体响应速度',
   avgQueueWait: '消息在队列中等待的平均时间。过长说明并发处理能力不足',
   sessionStuck: '会话卡住的次数。表示某个会话长时间未完成，可能需要人工介入',
+  // Session 级推理统计
+  sessionInferMs: '基于 session 消息时间戳计算的平均推理延迟。精确测量每次模型调用从请求到响应的耗时',
+  sessionTps: '基于 session 消息时间戳计算的平均 Token 吞吐量（输出 Token 数 / 推理耗时）',
 };
 
 function tipAttr(key) {
@@ -250,6 +253,10 @@ function renderSummary(s) {
   html += '<div class="card"><div class="label">平均耗时' + tipIcon('avgDur') + '</div><div class="value">' + fmtMs(s.avg_duration_ms) + '</div></div>';
   html += '<div class="card"><div class="label">推理占比' + tipIcon('inferRatio') + '</div><div class="value">' + s.infer_ratio + '%</div><div class="ratio-bar"><div class="fill-infer" style="width:' + s.infer_ratio + '%"></div><div class="fill-tool" style="width:' + (100 - s.infer_ratio) + '%"></div></div></div>';
   html += '<div class="card"><div class="label">平均速率' + tipIcon('tokPerS') + '</div><div class="value">' + (s.avg_tok_per_s || 0) + ' tok/s</div></div>';
+  // 新增：Session 级精确推理延迟
+  html += '<div class="card inference-card"><div class="label">平均推理延迟' + tipIcon('sessionInferMs') + '</div><div class="value">' + fmtMs(s.session_avg_inference_ms || 0) + '</div><div class="sub-value">' + (s.session_inference_count || 0) + ' 次调用</div></div>';
+  // 新增：Session 级精确 Token 吞吐量
+  html += '<div class="card inference-card"><div class="label">Token 吞吐量' + tipIcon('sessionTps') + '</div><div class="value">' + (s.session_avg_tokens_per_sec || 0) + ' tok/s</div><div class="sub-value">总推理 ' + fmtMs(s.session_total_inference_ms || 0) + '</div></div>';
   var errCls = s.error_count > 0 ? ' error' : '';
   html += '<div class="card' + errCls + '"><div class="label">错误数' + tipIcon('errors') + '</div><div class="value">' + s.error_count + '</div></div>';
   $('#summaryCards').innerHTML = html;
@@ -580,7 +587,7 @@ function renderRunDetail(d, el) {
   if (d.model_calls && d.model_calls.length > 0) {
     html += '<div class="detail-section" style="margin-top:12px"><h4>🤖 模型调用 (' + d.model_calls.length + ' 次)</h4>';
     html += '<table class="model-calls-table"><thead><tr>';
-    html += '<th>时间</th><th>模型</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>停止</th><th></th>';
+    html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>输入</th><th>输出</th><th>tok/s</th><th>缓存</th><th>费用</th><th>停止</th><th></th>';
     html += '</tr></thead><tbody>';
     var runUid = d.run_id ? d.run_id.substring(0, 8) : 'x';
     d.model_calls.forEach(function (mc, mcIdx) {
@@ -598,12 +605,17 @@ function renderRunDetail(d, el) {
         var hitPct = Math.round(mcU.cacheRead / (mcU.cacheRead + mcU.input) * 100);
         cacheStr += ' (' + hitPct + '%)';
       }
+      var inferMs = mc.inference_ms || 0;
+      var inferCls = speedClass(inferMs);
+      var tps = mc.tokens_per_sec || 0;
       var detailId = 'mc-run-' + runUid + '-' + mcIdx;
       html += '<tr onclick="toggleMcRunDetail(\'' + detailId + '\')" style="cursor:pointer">';
       html += '<td>' + escHtml(mcTs) + '</td>';
       html += '<td class="model-name">' + escHtml(shortModel(mc.model || '')) + '</td>';
+      html += '<td class="' + inferCls + '">' + (inferMs > 0 ? fmtMs(inferMs) : '-') + '</td>';
       html += '<td>' + fmtTok(mcU.input || 0) + '</td>';
       html += '<td>' + fmtTok(mcU.output || 0) + '</td>';
+      html += '<td>' + (tps > 0 ? tps + ' tok/s' : '-') + '</td>';
       html += '<td>' + cacheStr + '</td>';
       html += '<td class="cost">' + costStr + '</td>';
       html += '<td><span class="stop-tag ' + stopCls + '">' + escHtml(mc.stop_reason || '-') + '</span></td>';
@@ -613,7 +625,7 @@ function renderRunDetail(d, el) {
       // 展开详情
       var cs = mc.content_summary || {};
       var prompt = mc.prompt || {};
-      html += '<tr><td colspan="8" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
+      html += '<tr><td colspan="10" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
 
       // Prompt (用户输入)
       if (prompt.text) {

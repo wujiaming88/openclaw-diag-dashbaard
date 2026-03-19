@@ -44,6 +44,9 @@ a{color:var(--accent);text-decoration:none}
 .card .label{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:1px}
 .card.error .value{color:var(--red)}
 .card.warn .value{color:var(--yellow)}
+.card.inference-card{border-color:var(--accent);border-width:1px}
+.card.inference-card .value{color:var(--accent)}
+.card .sub-value{font-size:11px;color:var(--text2);margin-top:2px}
 
 /* 可折叠板块 */
 .section{background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden}
