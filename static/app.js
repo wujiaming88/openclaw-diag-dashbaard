@@ -1,4 +1,4 @@
-/* OpenClaw 诊断面板 v2.0 — 前端逻辑 */
+/* OpenClaw 诊断面板 v2.4.0 — 前端逻辑 */
 (function () {
 'use strict';
 
@@ -11,7 +11,9 @@ var autoInterval = 30000;
 var openRuns = {};
 var currentPage = 1;
 var perPage = 20;
-var currentDate = '';
+var mcPage = 1;
+var mcPerPage = 50;
+var dashboardMode = 'standard'; // 'standard' | 'advanced'
 
 // ============================================================
 // 工具函数
@@ -32,6 +34,13 @@ function fmtTok(n) {
   return (n / 1000000).toFixed(2) + 'M';
 }
 
+function fmtCost(v) {
+  if (!v || v === 0) return '$0';
+  if (v < 0.01) return '$' + v.toFixed(6);
+  if (v < 1) return '$' + v.toFixed(4);
+  return '$' + v.toFixed(2);
+}
+
 function fmtDowntime(sec) {
   if (sec === null || sec === undefined) return '-';
   if (sec < 60) return sec + 's';
@@ -41,7 +50,6 @@ function fmtDowntime(sec) {
 
 function fmtShortTs(isoStr) {
   if (!isoStr) return '-';
-  // Extract MM-DD HH:MM:SS from ISO string
   var m = isoStr.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
   if (!m) return isoStr;
   return m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] + ':' + m[6];
@@ -84,6 +92,8 @@ function eventTagHtml(category) {
   return '<span class="event-tag ' + escHtml(category) + '">' + escHtml(label) + '</span>';
 }
 
+function isAdvanced() { return dashboardMode === 'advanced'; }
+
 // ============================================================
 // API 请求
 // ============================================================
@@ -98,6 +108,16 @@ function api(path, cb) {
   };
   x.onerror = function () { cb(null); };
   x.send();
+}
+
+function fetchMode(cb) {
+  api('/api/mode', function (data) {
+    if (data && data.mode) {
+      dashboardMode = data.mode;
+    }
+    renderModeIndicator();
+    if (cb) cb();
+  });
 }
 
 function fetchSystemInfo() {
@@ -155,6 +175,26 @@ function fetchRunDetail(rid, el) {
   });
 }
 
+function fetchModelCalls(date, page, pp) {
+  api('/api/model_calls?date=' + date + '&page=' + page + '&per_page=' + pp, function (data) {
+    renderModelCallsList(data);
+  });
+}
+
+// ============================================================
+// 渲染 — 模式指示器
+// ============================================================
+function renderModeIndicator() {
+  var el = $('#modeIndicator');
+  if (!el) return;
+  if (isAdvanced()) {
+    el.innerHTML = '<span class="mode-badge advanced">🔵 高级诊断模式</span>';
+  } else {
+    el.innerHTML = '<span class="mode-badge standard">🟢 标准模式</span>';
+  }
+  el.style.display = 'inline-block';
+}
+
 // ============================================================
 // 渲染 — 系统信息
 // ============================================================
@@ -207,17 +247,14 @@ function renderSystemInfo(info) {
 }
 
 // ============================================================
-// 渲染 — 摘要卡片 (两行)
+// 渲染 — 摘要卡片
 // ============================================================
-// 指标解读提示
 var TIPS = {
-  // 摘要卡片
   runs: 'Agent 处理用户消息的总次数。每次用户发消息或系统触发都算一次 Run',
   avgDur: '从收到消息到回复完成的平均端到端耗时。包含推理等待和工具执行',
   inferRatio: '推理（等待模型响应）占总耗时的比例。越高说明瓶颈在模型侧；越低说明工具执行耗时多',
   totalTokens: '模型生成的输出 Token 总数。Token 数量直接决定 API 费用',
   errors: '处理失败的 Run 数。常见原因：模型超时、工具报错、会话异常',
-  // Run 详情汇总条
   e2e: '端到端耗时 = 从 Agent 收到消息开始，到最终回复发送完毕的总时间',
   inferTotal: '所有推理段的总耗时。模型每次决定调用工具或生成回复前都需要推理',
   toolTotal: '所有工具执行的总耗时。包括 exec、read、write、web_search 等',
@@ -225,15 +262,12 @@ var TIPS = {
   tokPerS: '模型输出速率（Token/秒）。Opus 通常 20-50 tok/s，Sonnet 50-100 tok/s，Haiku 100-200 tok/s',
   model: '本次 Run 使用的模型。不同模型在速度、质量、费用之间有不同权衡',
   channel: '消息来源渠道（如 Telegram、Discord）。影响消息格式和传输延迟',
-  // Token 摘要
   tokenInput: 'Input Token: 发送给模型的输入 Token 数（不含缓存部分）。通常很少，因为大部分被缓存命中',
   tokenOutput: 'Output Token: 模型生成的输出 Token 数。这是主要的费用来源',
   tokenCacheRead: 'Cache Read: 从缓存中读取的 Token 数。命中缓存可节省 90% 的输入费用',
   tokenCacheWrite: 'Cache Write: 写入缓存的 Token 数。首次对话或上下文变化时产生',
-  // 推理分段
   inferSeg: '模型的每次推理过程。第一次推理决定要做什么（调用工具或直接回复），后续推理处理工具结果',
   outputTokens: '该段推理中模型输出的 Token 数。越多说明回复越长或工具调用参数越复杂',
-  // Prompt
   promptMsg: 'Prompt 中的消息条数。包含系统提示、对话历史、工具定义等',
   promptHistory: '对话历史的字符数。越大说明上下文越长，推理越慢',
   promptSys: '系统提示的字符数。包含人设、规则、技能定义等固定内容',
@@ -243,10 +277,11 @@ var TIPS = {
   avgProcessTime: '消息从入队到处理完成的平均耗时。反映整体响应速度',
   avgQueueWait: '消息在队列中等待的平均时间。过长说明并发处理能力不足',
   sessionStuck: '会话卡住的次数。表示某个会话长时间未完成，可能需要人工介入',
-  // Session 级推理统计
   sessionInferMs: '基于 session 消息时间戳计算的平均推理延迟。精确测量每次模型调用从请求到响应的耗时',
   sessionTps: '基于 session 消息时间戳计算的平均 Token 吞吐量（输出 Token 数 / 推理耗时）',
   restarts: 'Gateway 重启次数。包括手动重启、配置变更重启和崩溃重启',
+  modelCalls: '当日模型调用总次数。每次 assistant 消息计为一次调用',
+  totalCost: '当日模型调用总费用。基于各模型的 Token 单价计算',
 };
 
 function tipAttr(key) {
@@ -258,23 +293,29 @@ function tipIcon(key) {
 }
 
 function renderSummary(s) {
-  if (!s || s.total_runs === 0) {
+  if (!s) {
     $('#summaryCards').innerHTML = '';
     $('#summaryCards2').innerHTML = '';
     return;
   }
-  // 第一行：核心性能指标
+
   var html = '';
-  html += '<div class="card"><div class="label">Run 总数' + tipIcon('runs') + '</div><div class="value">' + s.total_runs + '</div></div>';
-  html += '<div class="card"><div class="label">平均耗时' + tipIcon('avgDur') + '</div><div class="value">' + fmtMs(s.avg_duration_ms) + '</div></div>';
-  html += '<div class="card"><div class="label">推理占比' + tipIcon('inferRatio') + '</div><div class="value">' + s.infer_ratio + '%</div><div class="ratio-bar"><div class="fill-infer" style="width:' + s.infer_ratio + '%"></div><div class="fill-tool" style="width:' + (100 - s.infer_ratio) + '%"></div></div></div>';
-  html += '<div class="card"><div class="label">平均速率' + tipIcon('tokPerS') + '</div><div class="value">' + (s.avg_tok_per_s || 0) + ' tok/s</div></div>';
-  // 新增：Session 级精确推理延迟
+
+  if (isAdvanced()) {
+    // 高级模式：显示 Run 级别统计 + session 级统计
+    html += '<div class="card"><div class="label">Run 总数' + tipIcon('runs') + '</div><div class="value">' + (s.total_runs || 0) + '</div></div>';
+    html += '<div class="card"><div class="label">平均耗时' + tipIcon('avgDur') + '</div><div class="value">' + fmtMs(s.avg_duration_ms) + '</div></div>';
+    html += '<div class="card"><div class="label">推理占比' + tipIcon('inferRatio') + '</div><div class="value">' + (s.infer_ratio || 0) + '%</div><div class="ratio-bar"><div class="fill-infer" style="width:' + (s.infer_ratio || 0) + '%"></div><div class="fill-tool" style="width:' + (100 - (s.infer_ratio || 0)) + '%"></div></div></div>';
+    html += '<div class="card"><div class="label">平均速率' + tipIcon('tokPerS') + '</div><div class="value">' + (s.avg_tok_per_s || 0) + ' tok/s</div></div>';
+    var errCls = (s.error_count || 0) > 0 ? ' error' : '';
+    html += '<div class="card' + errCls + '"><div class="label">错误数' + tipIcon('errors') + '</div><div class="value">' + (s.error_count || 0) + '</div></div>';
+  }
+
+  // 两种模式都显示的指标
+  html += '<div class="card"><div class="label">模型调用数' + tipIcon('modelCalls') + '</div><div class="value">' + (s.session_model_call_count || 0) + '</div></div>';
   html += '<div class="card inference-card"><div class="label">平均推理延迟' + tipIcon('sessionInferMs') + '</div><div class="value">' + fmtMs(s.session_avg_inference_ms || 0) + '</div><div class="sub-value">' + (s.session_inference_count || 0) + ' 次调用</div></div>';
-  // 新增：Session 级精确 Token 吞吐量
   html += '<div class="card inference-card"><div class="label">Token 吞吐量' + tipIcon('sessionTps') + '</div><div class="value">' + (s.session_avg_tokens_per_sec || 0) + ' tok/s</div><div class="sub-value">总推理 ' + fmtMs(s.session_total_inference_ms || 0) + '</div></div>';
-  var errCls = s.error_count > 0 ? ' error' : '';
-  html += '<div class="card' + errCls + '"><div class="label">错误数' + tipIcon('errors') + '</div><div class="value">' + s.error_count + '</div></div>';
+
   // Gateway 重启
   var restartCls = (s.restart_count || 0) > 0 ? ' warn' : '';
   html += '<div class="card restart-card' + restartCls + '"><div class="label">Gateway 重启' + tipIcon('restarts') + '</div><div class="value">' + (s.restart_count || 0) + '</div>';
@@ -292,19 +333,21 @@ function renderSummary(s) {
   html2 += '<div class="card"><div class="label">缓存写入' + tipIcon('tokenCacheWrite') + '</div><div class="value">' + fmtTok(s.total_cache_write || 0) + '</div></div>';
   var hitCls = (s.cache_hit_ratio || 0) > 80 ? '' : ' warn';
   html2 += '<div class="card' + hitCls + '"><div class="label">缓存命中率' + tipIcon('cacheHit') + '</div><div class="value">' + (s.cache_hit_ratio || 0) + '%</div></div>';
+  // 总费用
+  html2 += '<div class="card"><div class="label">总费用' + tipIcon('totalCost') + '</div><div class="value">' + fmtCost(s.total_model_cost || 0) + '</div></div>';
   $('#summaryCards2').innerHTML = html2;
 }
 
-// 也在 showEmpty 中清除
-// 渲染 — Run 列表
+// ============================================================
+// 渲染 — 事件摘要卡片 (仅高级模式)
 // ============================================================
 function renderEventsSummary(data) {
   var el = $('#summaryCards3');
-  if (!data || !data.summary) { el.innerHTML = ''; return; }
+  if (!el) return;
+  if (!isAdvanced() || !data || !data.summary) { el.innerHTML = ''; return; }
   var s = data.summary;
   var ms_stats = data.message_stats || {};
   var ss = data.session_stats || {};
-  // 只在有任何数据时显示（不仅看 webhook）
   var hasData = (s.messages_processed || 0) > 0 || (s.total_events || 0) > 0 || (ss.stuck_count || 0) > 0;
   if (!hasData) { el.innerHTML = ''; return; }
   var html = '';
@@ -320,10 +363,9 @@ function renderPipeline(data) {
   var sec = $('#pipelineSection');
   var body = $('#pipelineBody');
   if (!sec || !body) return;
-  if (!data || !data.summary) { sec.style.display = 'none'; return; }
+  if (!isAdvanced() || !data || !data.summary) { sec.style.display = 'none'; return; }
   var s = data.summary;
   var ms_stats = data.message_stats || {};
-  // 只要有消息处理数据就显示
   if ((s.messages_queued || 0) === 0 && (s.messages_processed || 0) === 0) {
     sec.style.display = 'none'; return;
   }
@@ -349,7 +391,6 @@ function renderPipeline(data) {
   });
   html += '</div>';
 
-  // Token 用量摘要
   var mu = data.model_usage || {};
   if ((mu.total_output_tokens || 0) > 0) {
     html += '<div style="margin-top:12px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:13px;color:var(--text2)">';
@@ -378,14 +419,14 @@ window.toggleMcRunDetail = function (id) {
 };
 
 // ============================================================
-// 渲染 — 错误列表
+// 渲染 — 错误列表 (仅高级模式)
 // ============================================================
 function renderErrors(data) {
   var sec = $('#errorsSection');
   var body = $('#errorsBody');
   var badge = $('#errorCount');
   if (!sec || !body) return;
-  if (!data || !data.errors || data.errors.length === 0) {
+  if (!isAdvanced() || !data || !data.errors || data.errors.length === 0) {
     sec.style.display = 'none';
     if (badge) badge.textContent = '';
     return;
@@ -413,7 +454,6 @@ function renderErrors(data) {
     html += '<td class="error-source">' + escHtml(e.source_file || '') + '</td>';
     html += '</tr>';
 
-    // 展开完整错误
     if (detail.length > 120) {
       html += '<tr><td colspan="6" style="padding:0"><div class="error-detail-full" id="err-detail-' + idx + '">' + escHtml(detail) + '</div></td></tr>';
     }
@@ -442,7 +482,6 @@ function renderRestarts(data) {
   var restarts = data.restarts;
   var html = '';
 
-  // Current process info
   if (data.current_pid) {
     html += '<div class="restart-current-info">';
     html += '🟢 当前进程: PID <strong>' + escHtml(data.current_pid) + '</strong>';
@@ -469,18 +508,163 @@ function renderRestarts(data) {
     html += '</tr>';
   });
   html += '</tbody></table></div>';
-
-  // Summary line
   html += '<div class="restart-summary">共 <strong>' + data.total + '</strong> 次重启</div>';
+  body.innerHTML = html;
+}
+
+// ============================================================
+// 渲染 — 模型调用列表 (标准模式核心表格)
+// ============================================================
+function renderModelCallsList(data) {
+  var sec = $('#modelCallsSection');
+  var body = $('#modelCallsBody');
+  if (!sec || !body) return;
+  sec.style.display = 'block';
+
+  if (!data || !data.model_calls || data.model_calls.length === 0) {
+    body.innerHTML = '<div class="empty" style="padding:24px"><div class="icon">📭</div><p>该日期暂无模型调用数据</p></div>';
+    return;
+  }
+
+  var calls = data.model_calls;
+  var total = data.total || 0;
+  var page = data.page || 1;
+  var pp = data.per_page || 50;
+  var totalPages = data.total_pages || 1;
+  mcPage = page;
+
+  var html = '<div class="model-calls-scroll"><table class="model-calls-table"><thead><tr>';
+  html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>tok/s</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>停止原因</th><th></th>';
+  html += '</tr></thead><tbody>';
+
+  calls.forEach(function (mc, idx) {
+    var mcTs = mc.timestamp || '';
+    if (mcTs.indexOf('T') > -1) {
+      mcTs = mcTs.split('T')[1] || mcTs;
+      if (mcTs.length > 12) mcTs = mcTs.substring(0, 12);
+    }
+    var mcU = mc.usage || {};
+    var mcCost = mc.cost || {};
+    var stopCls = (mc.stop_reason === 'stop') ? 'stop' : (mc.stop_reason === 'toolUse' ? 'toolUse' : '');
+    var costStr = mcCost.total ? ('$' + mcCost.total.toFixed(6)) : '-';
+    var cacheStr = fmtTok(mcU.cacheRead || 0);
+    if ((mcU.cacheRead || 0) > 0 && (mcU.input || 0) > 0) {
+      var hitPct = Math.round(mcU.cacheRead / (mcU.cacheRead + mcU.input) * 100);
+      cacheStr += ' (' + hitPct + '%)';
+    }
+    var inferMs = mc.inference_ms || 0;
+    var inferCls = speedClass(inferMs);
+    var tps = mc.tokens_per_sec || 0;
+    var detailId = 'mc-list-' + idx;
+
+    html += '<tr onclick="toggleMcRunDetail(\'' + detailId + '\')" style="cursor:pointer">';
+    html += '<td class="mono">' + escHtml(mcTs) + '</td>';
+    html += '<td class="model-name">' + escHtml(shortModel(mc.model || '')) + '</td>';
+    html += '<td class="' + inferCls + '">' + (inferMs > 0 ? fmtMs(inferMs) : '-') + '</td>';
+    html += '<td>' + (tps > 0 ? tps + ' tok/s' : '-') + '</td>';
+    html += '<td>' + fmtTok(mcU.input || 0) + '</td>';
+    html += '<td>' + fmtTok(mcU.output || 0) + '</td>';
+    html += '<td>' + cacheStr + '</td>';
+    html += '<td class="cost">' + costStr + '</td>';
+    html += '<td><span class="stop-tag ' + stopCls + '">' + escHtml(mc.stop_reason || '-') + '</span></td>';
+    html += '<td style="font-size:11px;color:var(--text2)">▶</td>';
+    html += '</tr>';
+
+    // 展开详情
+    var cs = mc.content_summary || {};
+    var prompt = mc.prompt || {};
+    html += '<tr><td colspan="10" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
+
+    if (prompt.text) {
+      var pid = detailId + '-prompt';
+      html += '<div class="mc-content-block"><strong>📝 Prompt (用户输入):</strong>';
+      html += '<span class="collapse-toggle" onclick="toggleBlock(\'' + pid + '\', this)">▶ 展开 (' + prompt.text.length + ' 字)</span>';
+      html += '<div class="collapsible-content" id="' + pid + '"><pre>' + escHtml(prompt.text) + '</pre></div></div>';
+    }
+    if (cs.has_thinking) {
+      var tid = detailId + '-think';
+      var thinkText = cs.thinking_full || cs.thinking_preview || '';
+      if (thinkText) {
+        html += '<div class="mc-content-block"><strong>💭 Thinking:</strong>';
+        html += '<span class="collapse-toggle" onclick="toggleBlock(\'' + tid + '\', this)">▶ 展开 (' + thinkText.length + ' 字)</span>';
+        html += '<div class="collapsible-content" id="' + tid + '"><pre>' + escHtml(thinkText) + '</pre></div></div>';
+      }
+    }
+    if (cs.has_text) {
+      var oid = detailId + '-out';
+      var outText = cs.text_full || cs.text_preview || '';
+      if (outText) {
+        html += '<div class="mc-content-block"><strong>💬 Output:</strong>';
+        html += '<span class="collapse-toggle" onclick="toggleBlock(\'' + oid + '\', this)">▶ 展开 (' + outText.length + ' 字)</span>';
+        html += '<div class="collapsible-content" id="' + oid + '"><pre>' + escHtml(outText) + '</pre></div></div>';
+      }
+    }
+    if (cs.tool_calls && cs.tool_calls.length > 0) {
+      html += '<div class="mc-content-block"><strong>🔧 工具调用:</strong><div style="margin-top:4px">';
+      cs.tool_calls.forEach(function (tc) {
+        html += '<span class="tool-item">' + escHtml(tc.name);
+        if (tc.args_summary) html += ': ' + escHtml(tc.args_summary);
+        html += '</span>';
+      });
+      html += '</div></div>';
+    }
+    html += '</div></td></tr>';
+  });
+  html += '</tbody></table></div>';
+
+  // 分页
+  html += '<div class="pagination">';
+  html += '<button onclick="goMcPage(' + (page - 1) + ')"' + (page <= 1 ? ' disabled' : '') + '>◀ 上一页</button>';
+  html += '<span class="page-info">第 ' + page + ' / ' + totalPages + ' 页 (共 ' + total + ' 条)</span>';
+  html += '<button onclick="goMcPage(' + (page + 1) + ')"' + (page >= totalPages ? ' disabled' : '') + '>下一页 ▶</button>';
+  html += '<select onchange="changeMcPerPage(this.value)">';
+  [20, 50, 100].forEach(function (n) {
+    html += '<option value="' + n + '"' + (n === pp ? ' selected' : '') + '>' + n + ' 条/页</option>';
+  });
+  html += '</select>';
+  html += '</div>';
 
   body.innerHTML = html;
 }
 
-// 渲染 — Run 列表
+window.goMcPage = function (p) {
+  mcPage = p;
+  fetchModelCalls(currentDate, mcPage, mcPerPage);
+};
+
+window.changeMcPerPage = function (v) {
+  mcPerPage = parseInt(v) || 50;
+  mcPage = 1;
+  fetchModelCalls(currentDate, 1, mcPerPage);
+};
+
+// ============================================================
+// 渲染 — 锁定提示 (标准模式下高级功能)
+// ============================================================
+function renderLockedSections() {
+  if (isAdvanced()) {
+    // 高级模式：隐藏锁定提示
+    var lockRuns = $('#lockedRunsSection');
+    var lockEvents = $('#lockedEventsSection');
+    if (lockRuns) lockRuns.style.display = 'none';
+    if (lockEvents) lockEvents.style.display = 'none';
+    return;
+  }
+  // 标准模式：显示锁定提示
+  var lockRuns = $('#lockedRunsSection');
+  var lockEvents = $('#lockedEventsSection');
+  if (lockRuns) lockRuns.style.display = 'block';
+  if (lockEvents) lockEvents.style.display = 'block';
+}
+
+// ============================================================
+// 渲染 — Run 列表 (仅高级模式)
 // ============================================================
 function renderRunList(data) {
+  if (!isAdvanced()) return;
+  var content = $('#content');
   if (!data) {
-    $('#content').innerHTML = '<div class="empty"><div class="icon">📭</div><p>加载失败</p></div>';
+    content.innerHTML = '<div class="empty"><div class="icon">📭</div><p>加载失败</p></div>';
     return;
   }
   var runs = data.runs || [];
@@ -491,7 +675,7 @@ function renderRunList(data) {
   currentPage = page;
 
   if (total === 0) {
-    $('#content').innerHTML = '<div class="empty"><div class="icon">📭</div><p>该日期暂无 Run 数据</p></div>';
+    content.innerHTML = '<div class="empty"><div class="icon">📭</div><p>该日期暂无 Run 数据</p></div>';
     return;
   }
   var colSpan = 12;
@@ -530,7 +714,7 @@ function renderRunList(data) {
   html += '</select>';
   html += '</div></div>';
 
-  $('#content').innerHTML = html;
+  content.innerHTML = html;
 
   // 恢复展开的详情
   Object.keys(openRuns).forEach(function (rid) {
@@ -548,7 +732,6 @@ function renderRunList(data) {
 function renderRunDetail(d, el) {
   var html = '';
 
-  // 时间信息
   html += '<div style="margin-bottom:12px;font-size:13px;color:var(--text2)">';
   html += '开始: <strong style="color:var(--text)">' + escHtml(d.start) + '</strong>';
   html += ' &nbsp;结束: <strong style="color:var(--text)">' + escHtml(d.end || '-') + '</strong>';
@@ -611,7 +794,6 @@ function renderRunDetail(d, el) {
         html += '<div class="collapsible-content" id="' + afid + '"><pre>' + escHtml(JSON.stringify(t.arguments_full, null, 2)) + '</pre></div></div>';
       }
       html += '</td><td class="' + dc + '">' + fmtMs(t.duration_ms) + '</td>';
-      // 结果列
       html += '<td>';
       if (hasResult) {
         var isErr = t.result.isError;
@@ -630,7 +812,6 @@ function renderRunDetail(d, el) {
     html += '<p style="color:var(--text2)">无工具调用</p>';
   }
   html += '</div>';
-
   html += '</div>';
 
   // 汇总条
@@ -661,7 +842,7 @@ function renderRunDetail(d, el) {
     html += '<table class="model-calls-table"><thead><tr>';
     html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>输入</th><th>输出</th><th>tok/s</th><th>缓存</th><th>费用</th><th>停止</th><th></th>';
     html += '</tr></thead><tbody>';
-    var runUid = d.run_id ? d.run_id.substring(0, 8) : 'x';
+    var rUid = d.run_id ? d.run_id.substring(0, 8) : 'x';
     d.model_calls.forEach(function (mc, mcIdx) {
       var mcTs = mc.timestamp || '';
       if (mcTs.indexOf('T') > -1) {
@@ -680,7 +861,7 @@ function renderRunDetail(d, el) {
       var inferMs = mc.inference_ms || 0;
       var inferCls = speedClass(inferMs);
       var tps = mc.tokens_per_sec || 0;
-      var detailId = 'mc-run-' + runUid + '-' + mcIdx;
+      var detailId = 'mc-run-' + rUid + '-' + mcIdx;
       html += '<tr onclick="toggleMcRunDetail(\'' + detailId + '\')" style="cursor:pointer">';
       html += '<td>' + escHtml(mcTs) + '</td>';
       html += '<td class="model-name">' + escHtml(shortModel(mc.model || '')) + '</td>';
@@ -694,19 +875,15 @@ function renderRunDetail(d, el) {
       html += '<td style="font-size:11px;color:var(--text2)">▶</td>';
       html += '</tr>';
 
-      // 展开详情
       var cs = mc.content_summary || {};
       var prompt = mc.prompt || {};
       html += '<tr><td colspan="10" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
-
-      // Prompt (用户输入)
       if (prompt.text) {
         var pid = detailId + '-prompt';
-        html += '<div class="mc-content-block"><strong>📝 Prompt (用户输入):</strong>';
+        html += '<div class="mc-content-block"><strong>📝 Prompt:</strong>';
         html += '<span class="collapse-toggle" onclick="toggleBlock(\'' + pid + '\', this)">▶ 展开 (' + prompt.text.length + ' 字)</span>';
         html += '<div class="collapsible-content" id="' + pid + '"><pre>' + escHtml(prompt.text) + '</pre></div></div>';
       }
-      // Thinking
       if (cs.has_thinking) {
         var tid = detailId + '-think';
         var thinkText = cs.thinking_full || cs.thinking_preview || '';
@@ -716,7 +893,6 @@ function renderRunDetail(d, el) {
           html += '<div class="collapsible-content" id="' + tid + '"><pre>' + escHtml(thinkText) + '</pre></div></div>';
         }
       }
-      // Output
       if (cs.has_text) {
         var oid = detailId + '-out';
         var outText = cs.text_full || cs.text_preview || '';
@@ -726,7 +902,6 @@ function renderRunDetail(d, el) {
           html += '<div class="collapsible-content" id="' + oid + '"><pre>' + escHtml(outText) + '</pre></div></div>';
         }
       }
-      // 工具调用列表
       if (cs.tool_calls && cs.tool_calls.length > 0) {
         html += '<div class="mc-content-block"><strong>🔧 工具调用:</strong><div style="margin-top:4px">';
         cs.tool_calls.forEach(function (tc) {
@@ -764,29 +939,43 @@ function showEmpty() {
 }
 
 function showLoading() {
-  $('#content').innerHTML = '<div class="loading"><span class="spinner"></span>加载中...</div>';
+  if (isAdvanced()) {
+    $('#content').innerHTML = '<div class="loading"><span class="spinner"></span>加载中...</div>';
+  }
 }
 
 function loadData() {
   showLoading();
+  renderLockedSections();
   var d = currentDate;
-  // 使用批量接口 /api/dashboard 一次获取所有数据，减少 HTTP 请求
-  api('/api/dashboard?date=' + d + '&page=' + currentPage + '&per_page=' + perPage, function (data) {
-    // 移除骨架屏
+  api('/api/dashboard?date=' + d + '&page=' + currentPage + '&per_page=' + perPage + '&mc_page=' + mcPage + '&mc_per_page=' + mcPerPage, function (data) {
     var skeleton = $('#skeletonCards');
     if (skeleton) skeleton.style.display = 'none';
     if (!data) {
-      // 回退到分离请求
       fetchSummary(d);
-      fetchEventsSummary(d);
-      fetchRuns(d, currentPage, perPage);
+      if (isAdvanced()) {
+        fetchEventsSummary(d);
+        fetchRuns(d, currentPage, perPage);
+      }
+      fetchModelCalls(d, mcPage, mcPerPage);
       return;
     }
     renderSummary(data.summary);
-    renderEventsSummary(data.events);
-    renderPipeline(data.events);
     renderRestarts(data.restarts);
-    renderRunList(data.runs);
+    renderModelCallsList(data.model_calls);
+
+    if (isAdvanced()) {
+      if (data.events) {
+        renderEventsSummary(data.events);
+        renderPipeline(data.events);
+      }
+      if (data.runs) {
+        renderRunList(data.runs);
+      }
+      if (data.errors) {
+        renderErrors(data.errors);
+      }
+    }
   });
 }
 
@@ -802,7 +991,7 @@ function initAutoRefresh(ms) {
 }
 
 // ============================================================
-// 全局事件处理 (onclick handlers)
+// 全局事件处理
 // ============================================================
 window.toggleSysInfo = function (el) {
   el.classList.toggle('open');
@@ -891,6 +1080,7 @@ window.scrollToRun = function (rid) {
 $('#dateSelect').addEventListener('change', function () {
   currentDate = this.value;
   currentPage = 1;
+  mcPage = 1;
   openRuns = {};
   loadData();
 });
@@ -899,9 +1089,11 @@ $('#autoRefreshSelect').addEventListener('change', function () {
   initAutoRefresh(parseInt(this.value) || 0);
 });
 
-// 启动
-fetchSystemInfo();
-fetchDates();
-initAutoRefresh(autoInterval);
+// 启动: 先获取模式，再加载数据
+fetchMode(function () {
+  fetchSystemInfo();
+  fetchDates();
+  initAutoRefresh(autoInterval);
+});
 
 })();

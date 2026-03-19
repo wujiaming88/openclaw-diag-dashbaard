@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OpenClaw 诊断面板</title>
 <link rel="preconnect" href="/">
-<link rel="preload" href="/static/app.js?v=14" as="script">
+<link rel="preload" href="/static/app.js?v=15" as="script">
 <link rel="preload" href="/api/dates" as="fetch" crossorigin>
 <style>
 /* 关键内联 CSS — 首屏骨架样式，避免 FOUC */
@@ -26,13 +26,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .loading-skeleton{height:80px;background:linear-gradient(90deg,var(--card) 25%,var(--bg2) 50%,var(--card) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 </style>
-<link rel="stylesheet" href="/static/style.css?v=14">
+<link rel="stylesheet" href="/static/style.css?v=15">
 </head>
 <body>
 <div class="container">
   <div id="sysInfoBar" class="sysinfo-bar" style="display:none"></div>
   <div class="header">
-    <h1>🔍 <span>OpenClaw</span> 诊断面板</h1>
+    <h1>🔍 <span>OpenClaw</span> 诊断面板 <span id="modeIndicator" style="display:none"></span></h1>
     <div class="controls">
       <select id="dateSelect"></select>
       <button onclick="refresh()">🔄 刷新</button>
@@ -63,7 +63,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
   <div id="summaryCards2" class="cards"></div>
   <div id="summaryCards3" class="cards"></div>
 
-  <!-- 消息处理流水线 -->
+  <!-- 消息处理流水线 (仅高级模式) -->
   <div id="pipelineSection" class="section collapsible" style="display:none">
     <div class="section-header" onclick="toggleSection(this)">
       <h2>📡 消息处理流水线</h2>
@@ -81,10 +81,50 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
     <div class="section-body open" id="restartsBody"></div>
   </div>
 
-  <!-- Run 列表 -->
+  <!-- 模型调用记录 (两种模式都有) -->
+  <div id="modelCallsSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleSection(this)">
+      <h2>🤖 模型调用记录</h2>
+      <span class="toggle-icon">▼</span>
+    </div>
+    <div class="section-body open" id="modelCallsBody"></div>
+  </div>
+
+  <!-- 锁定提示：Run 详情 (标准模式显示) -->
+  <div id="lockedRunsSection" class="section locked-section" style="display:none">
+    <div class="locked-content">
+      <div class="locked-icon">🔒</div>
+      <div class="locked-text">
+        <strong>Run 详情</strong> — 需要高级诊断模式
+        <div class="locked-hint">启动时添加 <code>--advanced</code> 参数以解锁此功能</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 锁定提示：事件管道 (标准模式显示) -->
+  <div id="lockedEventsSection" class="section locked-section" style="display:none">
+    <div class="locked-content">
+      <div class="locked-icon">🔒</div>
+      <div class="locked-text">
+        <strong>事件管道 & 错误追踪</strong> — 需要高级诊断模式
+        <div class="locked-hint">启动时添加 <code>--advanced</code> 参数，并开启 <code>diagnostics.enabled</code> + <code>logging.level: debug</code></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run 列表 (仅高级模式) -->
   <div id="content"></div>
 
+  <!-- 错误列表 (仅高级模式) -->
+  <div id="errorsSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleSection(this)">
+      <h2>⚠️ 错误 <span class="section-badge error" id="errorCount"></span></h2>
+      <span class="toggle-icon">▼</span>
+    </div>
+    <div class="section-body open" id="errorsBody"></div>
+  </div>
+
 </div>
-<script defer src="/static/app.js?v=14"></script>
+<script defer src="/static/app.js?v=15"></script>
 </body>
 </html>
