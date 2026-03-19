@@ -8,10 +8,14 @@ A web-based performance diagnostic tool for the [OpenClaw](https://github.com/ni
 
 - **Zero Dependencies** — Uses only the Python standard library
 - **Separated Frontend** — Backend API + static files (`static/` directory)
-- **Summary Cards** — Two rows of KPI cards: run count, avg duration, inference ratio, token throughput, error count, token usage, cache hit rate
+- **Standard / Advanced Mode** — Standard mode reads session files only (no debug config needed); `--advanced` unlocks full diagnostics
+- **Summary Cards** — KPI cards: run count, avg duration, inference latency, token throughput, error count, token usage, cache hit rate
 - **Message Pipeline** — Visual pipeline: Message Queued → Queue Enqueue → Queue Dequeue → Run Execution → Message Processed
-- **Model Call Details** — Per-run LLM call breakdown showing input/output tokens, cache usage, cost, thinking preview, tool calls (embedded in run detail, matched via session files)
-- **Run List** — Paginated run table with timing, model, channel, status
+- **Model Call Details** — Per-run LLM call breakdown showing input/output tokens, cache usage, cost, thinking preview, tool calls
+- **Inference Timing** — Precise per-call inference_ms and tokens_per_sec calculated from session.jsonl timestamps
+- **Gateway Restart History** — Tracks SHUTDOWN/TRIGGER/STARTUP/CRASH events with KPI cards and collapsible detail table
+- **Probe Panel** — 6 built-in probes (health, gateway status, config validate, doctor, update status, models status) with one-click execution and live status indicators
+- **Run List** — Paginated run table with timing, model, channel, status, inference latency, tok/s
 - **Run Detail** — Expandable Gantt chart, inference segments, tool call arguments, token summary
 - **Gzip Compression** — Automatic gzip for responses >1KB (72-76% size reduction)
 - **ETag Caching** — Static files support ETag + 304 Not Modified
@@ -24,7 +28,29 @@ A web-based performance diagnostic tool for the [OpenClaw](https://github.com/ni
 - **Python 3.6+** — No modern-only syntax
 - **Graceful Errors** — Survives missing dirs, corrupt JSON, huge logs, port conflicts
 
-### CLI Tool (`openclaw-diag.sh`)
+### CLI Mode
+
+Run probes directly from the terminal — no web server needed:
+
+```bash
+python3 openclaw-dashboard.py --cli                        # Run all 6 probes
+python3 openclaw-dashboard.py --cli --probe health         # Single probe
+python3 openclaw-dashboard.py --cli --probe gateway_status # Gateway status
+python3 openclaw-dashboard.py --cli --json                 # JSON output
+```
+
+**Available probes:**
+
+| Probe | Description |
+|-------|-------------|
+| `health` | Agent list, session counts, channel status |
+| `gateway_status` | PID, port, bind mode, service state, RPC check |
+| `config_validate` | Configuration file syntax and structure |
+| `doctor` | Full audit: security, skills, plugins, session locks, memory |
+| `update_status` | Installed version, update channel, available updates |
+| `models_status` | Default model, fallbacks, auth status, configured models |
+
+### Shell Script (`openclaw-diag.sh`)
 
 - **Terminal Diagnostic** — Colored terminal output with run timelines
 - **Live Follow Mode** — Real-time log streaming (`-f`)
@@ -35,9 +61,16 @@ A web-based performance diagnostic tool for the [OpenClaw](https://github.com/ni
 
 ## Prerequisites: Enable OpenClaw Diagnostics
 
-Edit `~/.openclaw/openclaw.json`:
+### Standard Mode (default)
+
+No configuration changes needed. Reads session files (`~/.openclaw/agents/*/sessions/*.jsonl`) for inference timing, token usage, and model call details.
+
+### Advanced Mode (`--advanced`)
+
+For full diagnostics including log-based run events and message pipeline:
 
 ```json
+// ~/.openclaw/openclaw.json
 {
   "diagnostics": {
     "enabled": true
@@ -50,19 +83,24 @@ Edit `~/.openclaw/openclaw.json`:
 
 Then restart: `openclaw gateway restart`
 
-- `diagnostics.enabled: true` — Enables diagnostic events
-- `logging.level: "debug"` — Records run lifecycle events
-
 ## Quick Start
 
 ### Web Dashboard
 
 ```bash
-python3 openclaw-dashboard.py
+python3 openclaw-dashboard.py               # Standard mode
+python3 openclaw-dashboard.py --advanced     # Advanced mode (needs debug logs)
 # Open http://127.0.0.1:9090
 ```
 
-### CLI Tool
+### CLI Probes
+
+```bash
+python3 openclaw-dashboard.py --cli          # All probes, human-readable
+python3 openclaw-dashboard.py --cli --json   # All probes, JSON output
+```
+
+### Shell Script
 
 ```bash
 ./openclaw-diag.sh              # Today's runs
@@ -72,7 +110,7 @@ python3 openclaw-dashboard.py
 ./openclaw-diag.sh -s           # Summary only
 ```
 
-## Command Line Options (Web Dashboard)
+## Command Line Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -82,6 +120,10 @@ python3 openclaw-dashboard.py
 | `--sessions-dir DIR` | auto-detect | Session files directory |
 | `--token TOKEN` | *(none)* | Access token |
 | `--no-browser` | `false` | Don't auto-open browser |
+| `--advanced` | `false` | Enable advanced diagnostics (requires debug logs) |
+| `--cli` | `false` | CLI mode (no web server) |
+| `--probe NAME` | `all` | CLI: run specific probe (`health`, `gateway_status`, `config_validate`, `doctor`, `update_status`, `models_status`, `all`) |
+| `--json` | `false` | CLI: JSON output format |
 
 ### Auto-Detection Order
 
@@ -103,6 +145,8 @@ python3 openclaw-dashboard.py
 | `GET /api/run/<id>?date=` | Run detail with model_calls, gantt, tools |
 | `GET /api/model_calls?date=&page=&per_page=` | All model calls (from session files) |
 | `GET /api/events/errors?date=&severity=&type=` | Error list with filtering |
+| `POST /api/probe/<name>` | Execute a single probe |
+| `POST /api/probe/all` | Execute all probes |
 
 All responses: `Content-Type: application/json; charset=utf-8`, gzip supported.
 
@@ -110,8 +154,24 @@ All responses: `Content-Type: application/json; charset=utf-8`, gzip supported.
 
 ### Data Sources
 
-1. **Log files** (`/tmp/openclaw/openclaw-YYYY-MM-DD.log`) — Run events, timing, tool execution
-2. **Session files** (`~/.openclaw/agents/*/sessions/*.jsonl`) — Model call details, token usage, tool arguments
+1. **Session files** (`~/.openclaw/agents/*/sessions/*.jsonl`) — Model call details, token usage, inference timing, tool arguments
+2. **Log files** (`/tmp/openclaw/openclaw-YYYY-MM-DD.log`) — Run events, timing, tool execution *(advanced mode)*
+3. **OpenClaw CLI** — Live probes via `openclaw health`, `openclaw gateway status`, `openclaw doctor`, etc.
+
+### Inference Timing
+
+Precise inference duration calculated from session.jsonl message timestamps:
+- Extracts `assistant` message timestamps and preceding `user`/`tool` timestamps
+- Computes `inference_ms` = time between last input and assistant response
+- Calculates `tokens_per_sec` = output tokens / inference duration
+
+### Gateway Restart Detection
+
+Identifies 4 event types from log files:
+- **SHUTDOWN** — Graceful SIGTERM-initiated shutdown
+- **TRIGGER** — External restart trigger (e.g., `openclaw gateway restart`)
+- **STARTUP** — Gateway start event
+- **CRASH** — Unexpected termination (no preceding SIGTERM)
 
 ### Model Call Matching
 
