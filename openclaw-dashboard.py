@@ -2001,6 +2001,10 @@ class DataStore(object):
         self.sessions_dirs = sessions_dirs
         self._cache = {}  # date -> (mtime, runs dict)
         self._events_cache = {}  # date -> (mtime, events dict)
+        self._summary_cache = {}  # date -> (timestamp, result)
+        self._restarts_cache = {}  # date -> (timestamp, result)
+        self._tool_stats_cache = {}  # date -> (timestamp, result)
+        self._CACHE_TTL = 10  # 缓存有效期（秒）
         self._tool_data = None
         self._text_reply_usage = None
         self._model_calls = None
@@ -2088,7 +2092,18 @@ class DataStore(object):
         return dates
 
     def get_tool_stats(self, date=None):
-        """功能 1: 返回工具统计 — 按工具名分组的调用次数、平均 durationMs、成功/失败率"""
+        """功能 1: 返回工具统计（带 TTL 缓存）"""
+        import time as _time
+        cache_key = date or "_all"
+        cached = self._tool_stats_cache.get(cache_key)
+        if cached and (_time.monotonic() - cached[0]) < self._CACHE_TTL:
+            return cached[1]
+        result = self._compute_tool_stats(date)
+        self._tool_stats_cache[cache_key] = (_time.monotonic(), result)
+        return result
+
+    def _compute_tool_stats(self, date=None):
+        """实际计算工具统计 — 按工具名分组的调用次数、平均 durationMs、成功/失败率"""
         self._get_tool_data()
         tr = self._tool_results or {}
         # Filter by date using model_calls timestamps to find relevant toolCallIds
@@ -2300,6 +2315,18 @@ class DataStore(object):
         return events
 
     def get_summary(self, date, advanced_mode=False):
+        # TTL 缓存
+        import time as _time
+        cache_key = f"{date}:{advanced_mode}"
+        cached = self._summary_cache.get(cache_key)
+        if cached and (_time.monotonic() - cached[0]) < self._CACHE_TTL:
+            return cached[1]
+
+        result = self._compute_summary(date, advanced_mode)
+        self._summary_cache[cache_key] = (_time.monotonic(), result)
+        return result
+
+    def _compute_summary(self, date, advanced_mode=False):
         # 标准模式：只从 session 文件获取统计
         # 高级模式：额外从 debug 日志获取 Run 级统计
         
@@ -2759,7 +2786,31 @@ class DataStore(object):
         }
 
     def get_runs_list(self, date, page=1, per_page=20):
-        """返回某天的 run 列表（分页）"""
+        """返回某天的 run 列表（分页，带 TTL 缓存）"""
+        import time as _time
+        cache_key = f"runs_list:{date}"
+        cached = self._cache.get(cache_key)
+        if cached and (_time.monotonic() - cached[0]) < self._CACHE_TTL:
+            all_results = cached[1]
+        else:
+            all_results = self._compute_runs_list(date)
+            self._cache[cache_key] = (_time.monotonic(), all_results)
+        # 分页
+        total = len(all_results)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * per_page
+        end = start + per_page
+        return {
+            "runs": all_results[start:end],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+        }
+
+    def _compute_runs_list(self, date):
+        """实际计算 run 列表"""
         runs = self._load_runs(date)
         tool_data = self._get_tool_data_nonblocking()
         text_reply_usage = self._get_text_reply_usage_nonblocking()
@@ -2824,21 +2875,21 @@ class DataStore(object):
             })
         # Sort by start time descending (newest first)
         all_results.sort(key=lambda r: r["start"], reverse=True)
-        total = len(all_results)
-        total_pages = max(1, math.ceil(total / per_page)) if per_page > 0 else 1
-        page = max(1, min(page, total_pages))
-        start_idx = (page - 1) * per_page
-        end_idx = start_idx + per_page
-        return {
-            "runs": all_results[start_idx:end_idx],
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "total_pages": total_pages,
-        }
+        return all_results
 
     def get_restarts(self, date=None):
-        """返回 Gateway 重启历史"""
+        """返回 Gateway 重启历史（带 TTL 缓存）"""
+        import time as _time
+        cache_key = date or "_all"
+        cached = self._restarts_cache.get(cache_key)
+        if cached and (_time.monotonic() - cached[0]) < self._CACHE_TTL:
+            return cached[1]
+        result = self._compute_restarts(date)
+        self._restarts_cache[cache_key] = (_time.monotonic(), result)
+        return result
+
+    def _compute_restarts(self, date=None):
+        """实际计算 Gateway 重启历史"""
         log_files = find_log_files(self.log_dir, date)
         restarts = parse_gateway_restarts(log_files)
         current_pid, current_since = get_current_gateway_process()
@@ -3340,6 +3391,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 date = params.get("date", [""])[0]
                 if not date:
+                    dates = self.data_store.get_dates()
+                    date = dates[0] if dates else ""
+                if not date:
                     self._send_json({"runs": [], "total": 0, "page": 1, "per_page": 20, "total_pages": 1})
                     return
                 page = 1
@@ -3389,6 +3443,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 date = params.get("date", [""])[0]
                 if not date:
+                    dates = self.data_store.get_dates()
+                    date = dates[0] if dates else ""
+                if not date:
                     self._send_json({"events": [], "total": 0, "page": 1, "per_page": 50, "total_pages": 1})
                     return
                 page = 1
@@ -3411,6 +3468,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 date = params.get("date", [""])[0]
                 if not date:
+                    dates = self.data_store.get_dates()
+                    date = dates[0] if dates else ""
+                if not date:
                     self._send_json({"date": "", "webhooks": [], "total": 0})
                     return
                 result = self.data_store.get_events_webhooks(date)
@@ -3421,6 +3481,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 date = params.get("date", [""])[0]
                 if not date:
+                    dates = self.data_store.get_dates()
+                    date = dates[0] if dates else ""
+                if not date:
                     self._send_json({"date": "", "messages": [], "total": 0})
                     return
                 result = self.data_store.get_events_messages(date)
@@ -3430,6 +3493,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({"available": False, "message": "需要高级诊断模式 (--advanced)"})
                     return
                 date = params.get("date", [""])[0]
+                if not date:
+                    dates = self.data_store.get_dates()
+                    date = dates[0] if dates else ""
                 if not date:
                     self._send_json({"date": "", "errors": [], "total": 0})
                     return
