@@ -2221,6 +2221,7 @@ class DataStore(object):
                 sessions_map[sid]["last_ts"] = ts
 
         # Enrich with model call data
+        tr = self._tool_results or {}
         for mc in all_mc:
             sid = mc.get("session_id", "")
             if not sid or sid not in sessions_map:
@@ -2232,6 +2233,75 @@ class DataStore(object):
                 sessions_map[sid]["model"] = mc.get("model", "")
             u = mc.get("usage", {})
             sessions_map[sid]["total_tokens"] += u.get("totalTokens", 0) or (u.get("input", 0) + u.get("output", 0))
+
+            # Aggregate model call stats
+            s = sessions_map[sid]
+            s["session_model_call_count"] = s.get("session_model_call_count", 0) + 1
+            inf_ms = mc.get("inference_ms", 0) or 0
+            tps = mc.get("tokens_per_sec", 0) or 0
+            s["session_total_inference_ms"] = s.get("session_total_inference_ms", 0) + inf_ms
+            if inf_ms > 0:
+                s["session_inference_count"] = s.get("session_inference_count", 0) + 1
+                s["_tps_sum"] = s.get("_tps_sum", 0) + tps
+            output_tokens = u.get("output", 0)
+            s["total_tokens_output"] = s.get("total_tokens_output", 0) + output_tokens
+            s["total_tokens_input"] = s.get("total_tokens_input", 0) + u.get("input", 0)
+            s["total_cache_read"] = s.get("total_cache_read", 0) + u.get("cacheRead", 0)
+            s["total_cache_write"] = s.get("total_cache_write", 0) + u.get("cacheWrite", 0)
+            cost = mc.get("cost", {})
+            s["total_model_cost"] = s.get("total_model_cost", 0) + (cost.get("total", 0) if isinstance(cost, dict) else 0)
+
+            # Aggregate thinking stats
+            s["thinking_total_chars"] = s.get("thinking_total_chars", 0) + mc.get("thinking_chars", 0)
+            if mc.get("thinking_chars", 0) > 0:
+                s["thinking_calls_count"] = s.get("thinking_calls_count", 0) + 1
+                s["_thinking_ratio_sum"] = s.get("_thinking_ratio_sum", 0) + mc.get("thinking_ratio", 0)
+
+            # Aggregate tool calls from this model call
+            cs = mc.get("content_summary", {})
+            for tc in cs.get("tool_calls", []):
+                tc_id = tc.get("id", "")
+                s["tool_call_count"] = s.get("tool_call_count", 0) + 1
+                result = tr.get(tc_id, {})
+                details = result.get("details", {}) if result else {}
+                dur_ms = details.get("durationMs", 0) or details.get("tookMs", 0)
+                if isinstance(dur_ms, (int, float)) and dur_ms > 0:
+                    s["_tool_total_ms"] = s.get("_tool_total_ms", 0) + dur_ms
+                is_err = result.get("isError", False)
+                exit_code = details.get("exitCode")
+                if is_err or (exit_code is not None and exit_code != 0):
+                    s["tool_error_count"] = s.get("tool_error_count", 0) + 1
+
+        # Compute derived averages for each session
+        for sid, s in sessions_map.items():
+            inf_count = s.get("session_inference_count", 0)
+            if inf_count > 0:
+                s["session_avg_inference_ms"] = round(s.get("session_total_inference_ms", 0) / inf_count, 1)
+                s["session_avg_tokens_per_sec"] = round(s.get("_tps_sum", 0) / inf_count, 1)
+            else:
+                s["session_avg_inference_ms"] = 0
+                s["session_avg_tokens_per_sec"] = 0
+            tc_count = s.get("tool_call_count", 0)
+            if tc_count > 0:
+                s["tool_avg_duration_ms"] = round(s.get("_tool_total_ms", 0) / tc_count, 1)
+            else:
+                s["tool_avg_duration_ms"] = 0
+            thinking_count = s.get("thinking_calls_count", 0)
+            if thinking_count > 0:
+                s["thinking_avg_ratio"] = round(s.get("_thinking_ratio_sum", 0) / thinking_count, 3)
+            else:
+                s["thinking_avg_ratio"] = 0
+            # Clean up internal accumulators
+            s.pop("_tps_sum", None)
+            s.pop("_tool_total_ms", None)
+            s.pop("_thinking_ratio_sum", None)
+            # Ensure all expected fields have defaults
+            for fld in ("session_model_call_count", "session_total_inference_ms",
+                        "session_inference_count", "total_tokens_output", "total_tokens_input",
+                        "total_cache_read", "total_cache_write", "total_model_cost",
+                        "tool_call_count", "tool_error_count",
+                        "thinking_total_chars", "thinking_calls_count"):
+                s.setdefault(fld, 0)
 
         # Try to extract agent from session dir path
         # sessions_dirs pattern: ~/.openclaw/agents/{agent}/sessions
