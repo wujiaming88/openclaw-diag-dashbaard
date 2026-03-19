@@ -1054,9 +1054,13 @@ for i, (run_id, r) in enumerate(sorted_runs):
         print(f"  会话:       {r['session_key']}")
     if r["prompt_messages"]:
         print(f"  历史消息数: {r['prompt_messages']}")
-    print(f"  开始时间:   {r['start'][11:23]}", end="")
-    if r["end"]:
-        print(f"  结束时间: {r['end'][11:23]}")
+    _start_dt = parse_time(r['start'])
+    _end_dt = parse_time(r['end']) if r['end'] else None
+    _start_str = _start_dt.strftime("%H:%M:%S.%f")[:-3] if _start_dt else r['start'][11:23]
+    _end_str = _end_dt.strftime("%H:%M:%S.%f")[:-3] if _end_dt else (r['end'][11:23] if r['end'] else "")
+    print(f"  开始时间:   {_start_str}", end="")
+    if _end_str:
+        print(f"  结束时间: {_end_str}")
     else:
         print()
 
@@ -1213,12 +1217,12 @@ for i, (run_id, r) in enumerate(sorted_runs):
     if r["end"]:
         timeline.append((r["end"], "[RUN-END]    处理完成, 准备返回结果"))
 
-    timeline.sort(key=lambda x: x[0])
+    timeline.sort(key=lambda x: parse_time(x[0]) or datetime.min)
 
     prev = None
     for t, label in timeline:
-        ts = t[11:23]
         curr = parse_time(t)
+        ts = curr.strftime("%H:%M:%S.%f")[:-3] if curr else t[11:23]
         if prev:
             delta_ms = (curr - prev).total_seconds() * 1000
             delta_str = fmt_duration(delta_ms)
