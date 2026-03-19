@@ -1078,13 +1078,20 @@ def parse_session_files(sessions_dirs):
         return tool_data, text_reply_usage, model_calls, tool_results, system_events, model_snapshots, all_messages
     files = []
     for d in sessions_dirs:
-        pattern = os.path.join(d, "*.jsonl")
-        files.extend(glob.glob(pattern))
+        for ext_pattern in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+            files.extend(glob.glob(os.path.join(d, ext_pattern)))
     for fpath in files:
         lines = safe_read_lines(fpath, max_lines=20000)
         # 从文件名提取 session_id (文件名格式: {session_id}.jsonl 或 {session_id}-topic-xxx.jsonl)
         fname = os.path.basename(fpath)
-        fname_session_id = fname.split(".")[0].split("-topic-")[0] if fname else ""
+        # 去掉 .jsonl.reset.* / .jsonl.deleted.* 后缀
+        fname_base = fname
+        for _sfx in [".deleted.", ".reset."]:
+            _idx = fname_base.find(_sfx)
+            if _idx >= 0:
+                fname_base = fname_base[:_idx]
+        fname_base = fname_base.replace(".jsonl", "")
+        fname_session_id = fname_base.split("-topic-")[0] if fname_base else ""
         # 从文件内容第一行获取内部 session_id
         internal_session_id = ""
         for line in lines:
@@ -1970,7 +1977,8 @@ def get_system_info(data_store, config_path, config_data):
     sessions_dir_count = len(data_store.sessions_dirs)
     session_file_count = 0
     for d in data_store.sessions_dirs:
-        session_file_count += len(glob.glob(os.path.join(d, "*.jsonl")))
+        for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+            session_file_count += len(glob.glob(os.path.join(d, _ep)))
     info["sessions_dir_count"] = sessions_dir_count
     info["session_file_count"] = session_file_count
 
@@ -2219,9 +2227,17 @@ class DataStore(object):
                 if p == "agents" and i + 1 < len(parts):
                     agent_name = parts[i + 1]
                     # find session files in this dir
-                    for f in glob.glob(os.path.join(d, "*.jsonl")):
-                        fname = os.path.basename(f).split(".")[0].split("-topic-")[0]
-                        agent_map[fname] = agent_name
+                    for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+                        for f in glob.glob(os.path.join(d, _ep)):
+                            _fn = os.path.basename(f)
+                            _fb = _fn
+                            for _sfx in [".deleted.", ".reset."]:
+                                _fi = _fb.find(_sfx)
+                                if _fi >= 0:
+                                    _fb = _fb[:_fi]
+                            _fb = _fb.replace(".jsonl", "")
+                            fname = _fb.split("-topic-")[0]
+                            agent_map[fname] = agent_name
 
         sessions_list = []
         for sid, info in sessions_map.items():
@@ -2478,9 +2494,9 @@ class DataStore(object):
                 models.add(run["model"])
             if run.get("channel"):
                 channels.add(run["channel"])
-            # session 优先，日志兜底
+            # session 推理段
             session_segs = compute_infer_segments_from_session(run, all_model_calls)
-            segs = session_segs if session_segs else compute_infer_segments(run)
+            segs = session_segs
             for s in segs:
                 total_infer += s["duration_ms"]
             for t in run.get("tools", []):
@@ -2750,9 +2766,9 @@ class DataStore(object):
         all_model_calls = self._model_calls or []
         all_results = []
         for run in runs.values():
-            # session 优先，日志兜底
+            # session 推理段
             session_segs = compute_infer_segments_from_session(run, all_model_calls)
-            infer_segs = session_segs if session_segs else compute_infer_segments(run)
+            infer_segs = session_segs
             infer_ms = sum(s["duration_ms"] for s in infer_segs)
             tool_ms = 0
             tool_count = len(run.get("tools", []))
@@ -2842,11 +2858,10 @@ class DataStore(object):
         text_reply_usage = self._get_text_reply_usage()
         tool_results = self._get_tool_results()
 
-        # session 优先，日志兜底
+        # session 推理段
         all_model_calls = self._model_calls or []
         session_segs = compute_infer_segments_from_session(run, all_model_calls)
-        infer_segs = session_segs if session_segs else compute_infer_segments(run)
-        infer_source = "session" if session_segs else "log"
+        infer_segs = session_segs
         run_start_str = run["start"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("start") else ""
         run_end_str = run["end"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("end") else ""
 
@@ -2858,71 +2873,21 @@ class DataStore(object):
 
         infer_list = []
         for i, s in enumerate(infer_segs):
-            seg_source = s.get("source", "log")
-
-            if seg_source == "session":
-                # session 来源：直接使用 model_call 中的 token 数据
-                output_tokens = s.get("output_tokens", 0)
-                input_tokens = s.get("input_tokens", 0)
-                total_input += input_tokens
-                total_output += output_tokens
-                tok_per_s = s.get("tokens_per_sec", 0)
-                dur_s = s["duration_ms"] / 1000.0 if s["duration_ms"] > 0 else 0.001
-                if tok_per_s == 0 and output_tokens > 0:
-                    tok_per_s = round(output_tokens / dur_s, 1)
-                infer_list.append({
-                    "label": s["label"],
-                    "duration_ms": s["duration_ms"],
-                    "output_tokens": output_tokens,
-                    "tok_per_s": tok_per_s,
-                    "source": "session",
-                })
-            else:
-                # log 来源：原有逻辑
-                output_tokens = 0
-                usage_rec = {}
-                sorted_tools = sorted([t for t in run.get("tools", []) if t.get("start")], key=lambda t: t["start"])
-                tool_indices = s.get("tool_indices", [])
-
-                if tool_indices:
-                    # Collect usage from all tools in this batch, deduplicating
-                    for ti in tool_indices:
-                        if ti < len(sorted_tools):
-                            tc_id = sorted_tools[ti].get("toolCallId", "")
-                            td = tool_data.get(tc_id, {})
-                            u = td.get("usage", {})
-                            if u and id(u) not in seen_usage_ids:
-                                seen_usage_ids.add(id(u))
-                                output_tokens += u.get("output", 0)
-                                total_input += u.get("input", 0)
-                                total_output += u.get("output", 0)
-                                total_cache_read += u.get("cacheRead", 0)
-                                total_cache_write += u.get("cacheWrite", 0)
-                                usage_rec = u  # keep last for reference
-                elif run.get("end"):
-                    # Final segment (生成回复) or no-tool run: find text reply usage
-                    for ts_str, u in text_reply_usage:
-                        if run_start_str and run_end_str:
-                            if ts_str[:19] >= run_start_str and ts_str[:19] <= run_end_str:
-                                if id(u) not in seen_usage_ids:
-                                    usage_rec = u
-                                    output_tokens = u.get("output", 0)
-                                    seen_usage_ids.add(id(u))
-                                    total_input += u.get("input", 0)
-                                    total_output += u.get("output", 0)
-                                    total_cache_read += u.get("cacheRead", 0)
-                                    total_cache_write += u.get("cacheWrite", 0)
-                                    break
-
-                dur_s = s["duration_ms"] / 1000.0 if s["duration_ms"] > 0 else 0.001
-                tok_per_s = round(output_tokens / dur_s, 1) if output_tokens > 0 else 0
-                infer_list.append({
-                    "label": s["label"],
-                    "duration_ms": s["duration_ms"],
-                    "output_tokens": output_tokens,
-                    "tok_per_s": tok_per_s,
-                    "source": "log",
-                })
+            # session 来源：直接使用 model_call 中的 token 数据
+            output_tokens = s.get("output_tokens", 0)
+            input_tokens = s.get("input_tokens", 0)
+            total_input += input_tokens
+            total_output += output_tokens
+            tok_per_s = s.get("tokens_per_sec", 0)
+            dur_s = s["duration_ms"] / 1000.0 if s["duration_ms"] > 0 else 0.001
+            if tok_per_s == 0 and output_tokens > 0:
+                tok_per_s = round(output_tokens / dur_s, 1)
+            infer_list.append({
+                "label": s["label"],
+                "duration_ms": s["duration_ms"],
+                "output_tokens": output_tokens,
+                "tok_per_s": tok_per_s,
+            })
 
         tools_list = []
         total_tool_ms = 0
@@ -3283,8 +3248,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 debug_log_available = os.path.isdir(log_dir) and len(glob.glob(os.path.join(log_dir, "openclaw-*.log"))) > 0
                 session_files_available = False
                 for d in sessions_dirs:
-                    if len(glob.glob(os.path.join(d, "*.jsonl"))) > 0:
-                        session_files_available = True
+                    for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+                        if len(glob.glob(os.path.join(d, _ep))) > 0:
+                            session_files_available = True
+                            break
+                    if session_files_available:
                         break
                 self._send_json({
                     "mode": "advanced" if self.advanced_mode else "standard",
@@ -3773,7 +3741,8 @@ def main():
         if sessions_dirs:
             total_sessions = 0
             for d in sessions_dirs:
-                total_sessions += len(glob.glob(os.path.join(d, "*.jsonl")))
+                for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+                    total_sessions += len(glob.glob(os.path.join(d, _ep)))
             print("Session 目录: %s" % ", ".join(sessions_dirs))
         print("日志目录: %s (仅用于重启检测)" % log_dir)
 
@@ -3788,7 +3757,8 @@ def main():
     if sessions_dirs:
         total_sessions = 0
         for d in sessions_dirs:
-            total_sessions += len(glob.glob(os.path.join(d, "*.jsonl")))
+            for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+                total_sessions += len(glob.glob(os.path.join(d, _ep)))
         if ADVANCED_MODE:
             print("会话文件: %d 个" % total_sessions)
     else:

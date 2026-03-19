@@ -851,11 +851,10 @@ function renderRunDetail(d, el) {
 
   html += '<div class="detail-section"><h4>推理分段</h4>';
   if (d.infer_segments && d.infer_segments.length > 0) {
-    html += '<table class="detail-table"><thead><tr><th>阶段' + tipIcon('inferSeg') + '</th><th>耗时</th><th>输出 Token' + tipIcon('outputTokens') + '</th><th>速率' + tipIcon('tokPerS') + '</th><th>来源</th></tr></thead><tbody>';
+    html += '<table class="detail-table"><thead><tr><th>阶段' + tipIcon('inferSeg') + '</th><th>耗时</th><th>输出 Token' + tipIcon('outputTokens') + '</th><th>速率' + tipIcon('tokPerS') + '</th></tr></thead><tbody>';
     d.infer_segments.forEach(function (s) {
       var dc = speedClass(s.duration_ms);
-      var srcBadge = s.source === 'session' ? '<span class="src-badge src-session">📋 session</span>' : '<span class="src-badge src-log">📜 log</span>';
-      html += '<tr><td>' + escHtml(s.label) + '</td><td class="' + dc + '">' + fmtMs(s.duration_ms) + '</td><td>' + s.output_tokens + '</td><td>' + (s.tok_per_s > 0 ? s.tok_per_s + ' tok/s' : '-') + '</td><td>' + srcBadge + '</td></tr>';
+      html += '<tr><td>' + escHtml(s.label) + '</td><td class="' + dc + '">' + fmtMs(s.duration_ms) + '</td><td>' + s.output_tokens + '</td><td>' + (s.tok_per_s > 0 ? s.tok_per_s + ' tok/s' : '-') + '</td></tr>';
     });
     html += '</tbody></table>';
   } else {

@@ -299,14 +299,23 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
         session_dirs = [SESSIONS_DIR]
     all_session_files = []
     for sd in session_dirs:
-        all_session_files.extend(glob.glob(os.path.join(sd, "*.jsonl")))
+        for ext_pat in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+            all_session_files.extend(glob.glob(os.path.join(sd, ext_pat)))
     if not all_session_files:
-        all_session_files = glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl"))
+        for ext_pat in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+            all_session_files.extend(glob.glob(os.path.join(SESSIONS_DIR, ext_pat)))
     for sf in all_session_files:
         try:
             # 从文件路径推导 session_key: agents/{agent}/sessions/{id}.jsonl -> {agent}:{id}
             sf_parts = sf.replace("\\", "/").split("/")
-            sf_session_id = os.path.splitext(os.path.basename(sf))[0]
+            sf_fname = os.path.basename(sf)
+            sf_base = sf_fname
+            for _sfx in [".deleted.", ".reset."]:
+                _idx = sf_base.find(_sfx)
+                if _idx >= 0:
+                    sf_base = sf_base[:_idx]
+            sf_base = sf_base.replace(".jsonl", "")
+            sf_session_id = sf_base
             sf_agent = ""
             for pi, p in enumerate(sf_parts):
                 if p == "agents" and pi + 1 < len(sf_parts):
@@ -893,7 +902,7 @@ for i, (run_id, r) in enumerate(sorted_runs):
             out_tok = evt["output_tokens"]
             cache_read = evt.get("cache_read", 0)
             tps = evt["tokens_per_sec"]
-            timeline.append((send_ts, f"[MODEL-SEND] 模型推理开始 (第{idx_evt}次) ← session"))
+            timeline.append((send_ts, f"[MODEL-SEND] 模型推理开始 (第{idx_evt}次)"))
             recv_detail = f"[MODEL-RECV] 模型推理完成 (第{idx_evt}次) 耗时 {fmt_duration(inf_ms)}"
             if in_tok or out_tok:
                 tok_parts = [f"in={in_tok}", f"out={out_tok}"]
@@ -902,20 +911,9 @@ for i, (run_id, r) in enumerate(sorted_runs):
                 recv_detail += f" | {' '.join(tok_parts)}"
             if tps > 0:
                 recv_detail += f" ({tps:.1f} tok/s)"
-            recv_detail += " ← session"
             timeline.append((recv_ts, recv_detail))
         # 标记已使用 session 数据，避免日志重复
         used_session_model_events = True
-    else:
-        # 日志兜底
-        used_session_model_events = False
-        model_send_count = 0
-        for t, msg in r["events"]:
-            if "run agent start" in msg:
-                model_send_count += 1
-                timeline.append((t, f"[MODEL-SEND] 模型推理开始 (第{model_send_count}次) ← log"))
-            elif "run agent end" in msg:
-                timeline.append((t, f"[MODEL-RECV] 模型推理完成 (第{model_send_count}次) ← log"))
 
     for tool in r["tools"]:
         tid = tool["id"]
