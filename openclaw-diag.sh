@@ -1110,64 +1110,21 @@ for i, (run_id, r) in enumerate(sorted_runs):
         if total_tool > 0:
             print(f"      工具执行 {bar(total_tool, total_ms)}  {fmt_duration(total_tool):>8}")
 
-    # 推理分段明细 (优先使用 session-based per-call inference_ms)
-    if per_inference:
+    # 推理分段明细 (纯 session 数据)
+    if matched_session_events:
         print()
         print(f"    推理分段明细:")
-        print(f"      {'段':^24} {'耗时':>8} {'输出token':>10} {'速率':>12} {'来源':>6}")
-        print(f"      {'─'*24} {'─'*8} {'─'*10} {'─'*12} {'─'*6}")
-        for label, ms, usage_rec in per_inference:
-            # 尝试从 session-based per-call 数据获取更精确的 inference_ms
-            session_ms = 0
-            session_tps = 0.0
-            source = "log"
-            if usage_rec:
-                out_tok = usage_rec["output"]
-                # 查找 session-based per-call 数据
-                # 通过 tool_indices -> tool_id -> inference_usage 获取
-                found_session_data = False
-                for seg_label, seg_ms, seg_tool_indices in segments:
-                    if seg_label == label:
-                        for ti in seg_tool_indices:
-                            if ti < len(r["tools"]):
-                                tool = r["tools"][ti]
-                                urec = inference_usage.get(tool["id"])
-                                if urec and urec.get("inference_ms", 0) > 0:
-                                    session_ms = urec["inference_ms"]
-                                    session_tps = urec.get("tokens_per_sec", 0)
-                                    found_session_data = True
-                                    break
-                        if not found_session_data and not seg_tool_indices and "(生成回复)" in label:
-                            # text reply: search in text_reply_usage
-                            if r["end"] and r["start"]:
-                                for ts_str, u in text_reply_usage:
-                                    if ts_str[:19] >= r["start"][:19] and ts_str[:19] <= r["end"][:19]:
-                                        if u.get("inference_ms", 0) > 0:
-                                            session_ms = u["inference_ms"]
-                                            session_tps = u.get("tokens_per_sec", 0)
-                                            found_session_data = True
-                                            break
-                        break
-
-                if found_session_data and session_ms > 0:
-                    dur_str = fmt_duration(session_ms)
-                    out_str = str(out_tok)
-                    rate_str = f"{session_tps:.1f} tok/s" if session_tps > 0 else "-"
-                    source = "sess"
-                else:
-                    dur_str = fmt_duration(ms) if ms > 0 else "-"
-                    out_str = str(out_tok)
-                    if ms > 0 and out_tok > 0:
-                        rate = out_tok / (ms / 1000)
-                        rate_str = f"{rate:.1f} tok/s"
-                    else:
-                        rate_str = "-"
-                    source = "log"
-            else:
-                dur_str = fmt_duration(ms) if ms > 0 else "-"
-                out_str = "(未知)"
-                rate_str = "-"
-            print(f"      {label:<24} {dur_str:>8} {out_str:>10} {rate_str:>12} {source:>6}")
+        print(f"      {'段':^24} {'耗时':>8} {'输出token':>10} {'速率':>12}")
+        print(f"      {'─'*24} {'─'*8} {'─'*10} {'─'*12}")
+        for idx_s, evt in enumerate(matched_session_events, 1):
+            inf_ms = evt["inference_ms"]
+            out_tok = evt["output_tokens"]
+            tps = evt["tokens_per_sec"]
+            label = f"推理#{idx_s}"
+            dur_str = fmt_duration(inf_ms) if inf_ms > 0 else "-"
+            out_str = str(out_tok) if out_tok > 0 else "(未知)"
+            rate_str = f"{tps:.1f} tok/s" if tps > 0 else "-"
+            print(f"      {label:<24} {dur_str:>8} {out_str:>10} {rate_str:>12}")
 
 # ============================================================
 # 6. 错误列表
