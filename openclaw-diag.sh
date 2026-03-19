@@ -1,5 +1,5 @@
 #!/bin/bash
-# OpenClaw 诊断日志解析工具 v2.1
+# OpenClaw 诊断日志解析工具 v2.5
 # 用法:
 #   ./openclaw-diag.sh              # 解析今天的日志
 #   ./openclaw-diag.sh 2026-03-11   # 解析指定日期
@@ -10,9 +10,12 @@
 # 功能:
 #   - 解析 OpenClaw 诊断日志，展示 Run 时间线
 #   - 从 session 文件提取工具调用参数和 Token 用量
-#   - 计算推理分段耗时和 Token 速率
+#   - 计算推理分段耗时和 Token 速率 (inference_ms, tokens_per_sec)
 #   - 实时跟踪模式 (-f) 流式输出
 #   - 摘要模式 (-s) 快速统计
+#
+# 注: 完整探测功能（health/gateway/doctor/config/models）请使用:
+#   python3 openclaw-dashboard.py --cli [--probe <name>] [--json]
 #
 # 数据源:
 #   - 日志文件: /tmp/openclaw/openclaw-YYYY-MM-DD.log
