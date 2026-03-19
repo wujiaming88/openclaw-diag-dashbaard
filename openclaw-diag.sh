@@ -174,16 +174,17 @@ for line in sys.stdin:
 fi
 
 # 非实时模式
+NO_LOG=false
 if [ ! -f "$LOG" ]; then
-    echo -e "${RED}[错误] 日志文件不存在: $LOG${NC}"
-    echo ""
-    echo "可用的日志文件:"
-    ls -lt /tmp/openclaw/openclaw-*.log 2>/dev/null | head -5
-    exit 1
+    NO_LOG=true
 fi
 
 echo -e "${BOLD}[OpenClaw 诊断报告]${NC}"
-echo -e "${GRAY}日志文件: $LOG${NC}"
+if [ "$NO_LOG" = true ]; then
+    echo -e "${YELLOW}日志文件: $LOG (不存在，使用 session 数据)${NC}"
+else
+    echo -e "${GRAY}日志文件: $LOG${NC}"
+fi
 echo -e "${GRAY}会话目录: ${SESSIONS_DIR:-未找到}${NC}"
 echo -e "${GRAY}日期: $DATE${NC}"
 echo ""
@@ -469,17 +470,18 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
 # 2. 解析日志事件
 # ============================================================
 events = []
-with open(LOG) as f:
-    for line in f:
-        try:
-            obj = json.loads(line.strip())
-            t = obj.get("time", "")
-            parts = [obj.get(str(i), "") for i in range(3) if isinstance(obj.get(str(i), ""), str)]
-            msg = " ".join(parts)
-            level = obj.get("_meta", {}).get("logLevelName", "")
-            events.append((t, level, msg))
-        except:
-            pass
+if os.path.isfile(LOG):
+    with open(LOG) as f:
+        for line in f:
+            try:
+                obj = json.loads(line.strip())
+                t = obj.get("time", "")
+                parts = [obj.get(str(i), "") for i in range(3) if isinstance(obj.get(str(i), ""), str)]
+                msg = " ".join(parts)
+                level = obj.get("_meta", {}).get("logLevelName", "")
+                events.append((t, level, msg))
+            except:
+                pass
 
 # ============================================================
 # 3. 提取 run 信息
