@@ -203,6 +203,7 @@ LOG = os.environ.get("DIAG_LOG", "/tmp/openclaw/openclaw.log")
 LAST_N = int(os.environ.get("DIAG_LAST_N", "0"))
 SUMMARY_ONLY = os.environ.get("DIAG_SUMMARY", "false") == "true"
 SESSIONS_DIR = os.environ.get("DIAG_SESSIONS_DIR", "")
+DIAG_DATE = os.environ.get("DIAG_DATE", "")
 
 # ============================================================
 # 1. 从会话文件中提取工具调用参数
@@ -454,6 +455,7 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                                 "output_tokens": usage.get("output", 0) if isinstance(usage, dict) else 0,
                                 "cache_read": usage.get("cacheRead", 0) if isinstance(usage, dict) else 0,
                                 "tokens_per_sec": tokens_per_sec,
+                                "model": model,
                             }
                             session_infer_events[sf_session_key].append(infer_evt)
                             all_infer_events.append(infer_evt)
@@ -571,11 +573,97 @@ if LAST_N > 0:
     sorted_runs = sorted_runs[-LAST_N:]
 
 # ============================================================
+# 3.5 虚拟 Run 构造 (当无 debug 日志但有 session 数据时)
+# ============================================================
+virtual_runs_mode = False
+
+if not sorted_runs and all_infer_events:
+    virtual_runs_mode = True
+
+    # 按日期过滤 session 事件
+    date_filtered_events = []
+    for evt in all_infer_events:
+        send_ts = evt.get("send_ts", "")
+        if DIAG_DATE and send_ts[:10] != DIAG_DATE:
+            continue
+        date_filtered_events.append(evt)
+
+    # 按 session_key 分组
+    session_groups = defaultdict(list)
+    for evt in date_filtered_events:
+        session_groups[evt["session_key"]].append(evt)
+
+    # 为每个 session_key 构造虚拟 Run
+    virtual_run_id = 0
+    for sk, evts in sorted(session_groups.items(), key=lambda x: min(e["send_ts"] for e in x[1])):
+        virtual_run_id += 1
+        vrun_id = f"virtual-{virtual_run_id}"
+
+        sorted_evts = sorted(evts, key=lambda e: e["send_ts"])
+        v_start = sorted_evts[0]["send_ts"]
+        v_end = sorted_evts[-1]["recv_ts"]
+        v_model = ""
+        for e in sorted_evts:
+            if e.get("model"):
+                v_model = e["model"]
+                break
+
+        # 从 tool_params 和 tool_details 中按时间窗口匹配工具调用
+        v_start_dt = parse_time(v_start)
+        v_end_dt = parse_time(v_end)
+        v_tools = []
+        if v_start_dt and v_end_dt:
+            # 收集此 session 所有推理事件的 tool_ids
+            matched_tool_ids = set()
+            for e in sorted_evts:
+                # 查找 inference_usage 中与此事件时间匹配的 tool_ids
+                for tid, usage_rec in inference_usage.items():
+                    if usage_rec.get("timestamp") == e["recv_ts"]:
+                        matched_tool_ids.update(usage_rec.get("tool_ids", []))
+
+            for tid in matched_tool_ids:
+                tp = tool_params.get(tid, {})
+                td = tool_details.get(tid, {})
+                tname = tp.get("name", "") or td.get("toolName", "unknown")
+                # 估算工具时间: 使用 tool_details 中的 durationMs
+                t_dur_ms = td.get("durationMs") or td.get("tookMs") or 0
+                v_tools.append({
+                    "name": tname,
+                    "start": "",  # 无精确时间
+                    "end": "",
+                    "id": tid,
+                    "virtual_duration_ms": t_dur_ms,
+                })
+
+        runs[vrun_id] = {
+            "start": v_start,
+            "end": v_end,
+            "events": [],
+            "tools": v_tools,
+            "model": v_model,
+            "channel": "",
+            "first_token": v_start,
+            "prompt_messages": 0,
+            "session_key": sk,
+            "virtual": True,
+        }
+
+    # 重新排序
+    sorted_runs = sorted(runs.items(), key=lambda x: x[1]["start"] or "")
+    if LAST_N > 0:
+        sorted_runs = sorted_runs[-LAST_N:]
+
+# ============================================================
 # 4. 摘要统计
 # ============================================================
 print("=" * 68)
 print(f"{'[摘要统计]':^64}")
 print("=" * 68)
+
+if virtual_runs_mode:
+    print()
+    print("  ⚠️  未检测到 debug 日志，使用 session 数据构建时间线（精度有限）")
+    print()
 
 total_runs = len(runs)
 total_tools = sum(len(r["tools"]) for r in runs.values())
@@ -704,6 +792,8 @@ for run_id, r in runs.items():
             te = parse_time(tool["end"])
             if ts and te:
                 tool_times.append((te - ts).total_seconds() * 1000)
+        elif tool.get("virtual_duration_ms", 0) > 0:
+            tool_times.append(tool["virtual_duration_ms"])
 
 print(f"  Run 总数:        {total_runs}")
 print(f"  工具调用总数:    {total_tools}")
@@ -802,6 +892,8 @@ if total_tools > 0:
                 te = parse_time(tool["end"])
                 if ts and te:
                     tool_dur[tool["name"]].append((te - ts).total_seconds() * 1000)
+            elif tool.get("virtual_duration_ms", 0) > 0:
+                tool_dur[tool["name"]].append(tool["virtual_duration_ms"])
 
     print()
     print("  工具使用排行:")
@@ -849,6 +941,8 @@ for i, (run_id, r) in enumerate(sorted_runs):
         status = "[完成]"
     else:
         status = "[进行中]"
+    if r.get("virtual"):
+        status = "[虚拟]"
     total_str = fmt_duration(total_ms) if total_ms else "进行中"
     print(f"  Run #{i+1}  {status}  总耗时: {total_str}")
     print(f"  {'-' * 62}")
@@ -890,6 +984,9 @@ for i, (run_id, r) in enumerate(sorted_runs):
     # 策略1: 通过 session_key 精确匹配
     if session_key and session_key in session_infer_events:
         matched_session_events = session_infer_events[session_key]
+        # 对虚拟 Run，按日期过滤（session 可能跨天）
+        if r.get("virtual") and DIAG_DATE:
+            matched_session_events = [e for e in matched_session_events if e["send_ts"][:10] == DIAG_DATE]
 
     # 策略2: 时间窗口匹配
     if not matched_session_events and r["start"] and r["end"]:
@@ -944,6 +1041,12 @@ for i, (run_id, r) in enumerate(sorted_runs):
             start_label += f"\n               {'':>9}  {'':>13}{param_summary}"
         if param_workdir:
             start_label += f"\n               {'':>9}  {'':>13}工作目录: {param_workdir}"
+
+        # 虚拟 Run 的工具没有精确时间戳，跳过 timeline 添加
+        if not tool["start"]:
+            # 对虚拟 Run，在 timeline 不添加工具的时间戳行
+            # 但在汇总中通过 virtual_duration_ms 计入
+            continue
 
         timeline.append((tool["start"], start_label))
 
@@ -1041,6 +1144,8 @@ for i, (run_id, r) in enumerate(sorted_runs):
             te_t = parse_time(tool["end"])
             if ts_t and te_t:
                 total_tool += (te_t - ts_t).total_seconds() * 1000
+        elif tool.get("virtual_duration_ms", 0) > 0:
+            total_tool += tool["virtual_duration_ms"]
 
     run_total_tokens = run_total_input + run_total_output + run_total_cache_read + run_total_cache_write
 
