@@ -413,6 +413,50 @@ def parse_time(ts):
     return None
 
 
+def normalize_usage(usage):
+    """兼容不同 provider 的 usage 字段名。
+
+    标准格式: {input, output, cacheRead, cacheWrite, totalTokens, cost}
+    OpenAI 格式: {prompt_tokens, completion_tokens, total_tokens}
+    Ark/其他格式: 可能缺字段或使用不同命名
+
+    统一返回标准格式（缺失字段默认 0）。
+    """
+    if not isinstance(usage, dict):
+        return {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0}
+
+    inp = usage.get("input", 0)
+    out = usage.get("output", 0)
+
+    # fallback: prompt_tokens / completion_tokens (OpenAI 旧格式)
+    if not inp and not out:
+        inp = usage.get("prompt_tokens", 0) or usage.get("promptTokens", 0) or 0
+        out = usage.get("completion_tokens", 0) or usage.get("completionTokens", 0) or 0
+
+    # fallback: input_tokens / output_tokens
+    if not inp and not out:
+        inp = usage.get("input_tokens", 0) or 0
+        out = usage.get("output_tokens", 0) or 0
+
+    cache_read = usage.get("cacheRead", 0) or usage.get("cache_read", 0) or usage.get("cache_read_input_tokens", 0) or 0
+    cache_write = usage.get("cacheWrite", 0) or usage.get("cache_write", 0) or usage.get("cache_creation_input_tokens", 0) or 0
+    total = usage.get("totalTokens", 0) or usage.get("total_tokens", 0) or 0
+    if not total and (inp or out):
+        total = inp + out + cache_read + cache_write
+
+    result = {
+        "input": inp,
+        "output": out,
+        "cacheRead": cache_read,
+        "cacheWrite": cache_write,
+        "totalTokens": total,
+    }
+    # 保留原始 cost 数据
+    if "cost" in usage:
+        result["cost"] = usage["cost"]
+    return result
+
+
 def ms_between(dt1, dt2):
     """两个 datetime 之间的毫秒差"""
     if dt1 is None or dt2 is None:
@@ -1287,7 +1331,7 @@ def parse_session_files(sessions_dirs):
                 if dm_ts:
                     prev_top_timestamp = dm_ts
                 continue
-            usage = msg.get("usage", {})
+            usage = normalize_usage(msg.get("usage", {}))
             timestamp = obj.get("timestamp", "")
             content = msg.get("content", [])
             if not isinstance(content, list):
@@ -1409,7 +1453,7 @@ def parse_session_files(sessions_dirs):
                 except (ValueError, TypeError):
                     inference_ms = 0
 
-            output_tokens = usage.get("output", 0) if isinstance(usage, dict) else 0
+            output_tokens = usage.get("output", 0)
             tokens_per_sec = round(output_tokens / (inference_ms / 1000), 1) if inference_ms > 0 and output_tokens > 0 else 0
 
             call_record = {
@@ -1426,11 +1470,11 @@ def parse_session_files(sessions_dirs):
                 "thinking_chars": thinking_chars_count,
                 "thinking_ratio": round(thinking_chars_count / max(thinking_chars_count + text_chars_count, 1), 3),
                 "usage": {
-                    "input": usage.get("input", 0) if isinstance(usage, dict) else 0,
-                    "output": usage.get("output", 0) if isinstance(usage, dict) else 0,
-                    "cacheRead": usage.get("cacheRead", 0) if isinstance(usage, dict) else 0,
-                    "cacheWrite": usage.get("cacheWrite", 0) if isinstance(usage, dict) else 0,
-                    "totalTokens": usage.get("totalTokens", 0) if isinstance(usage, dict) else 0,
+                    "input": usage.get("input", 0),
+                    "output": usage.get("output", 0),
+                    "cacheRead": usage.get("cacheRead", 0),
+                    "cacheWrite": usage.get("cacheWrite", 0),
+                    "totalTokens": usage.get("totalTokens", 0),
                 },
                 "cost": {
                     "input": cost_data.get("input", 0) if isinstance(cost_data, dict) else 0,
@@ -1848,8 +1892,17 @@ def compute_infer_segments_from_session(run, model_calls):
         if session_id:
             mc_sid = mc.get("session_id", "")
             mc_sid_file = mc.get("session_id_file", "")
-            if mc_sid and mc_sid_file:
-                if mc_sid != session_id and mc_sid_file != session_id:
+            # 只要有任一 ID 匹配就通过（包含子串匹配以兼容不同格式）
+            if mc_sid or mc_sid_file:
+                sid_match = (
+                    mc_sid == session_id or
+                    mc_sid_file == session_id or
+                    session_id in mc_sid or
+                    session_id in mc_sid_file or
+                    mc_sid in session_id or
+                    mc_sid_file in session_id
+                )
+                if not sid_match:
                     continue
 
         matched.append((mc_dt, mc))
@@ -1874,9 +1927,9 @@ def compute_infer_segments_from_session(run, model_calls):
         else:
             start_dt = end_dt
 
-        usage = mc.get("usage", {})
-        input_tokens = usage.get("input", 0) if isinstance(usage, dict) else 0
-        output_tokens = usage.get("output", 0) if isinstance(usage, dict) else 0
+        usage = normalize_usage(mc.get("usage", {}))
+        input_tokens = usage.get("input", 0)
+        output_tokens = usage.get("output", 0)
         tokens_per_sec = mc.get("tokens_per_sec", 0)
 
         segments.append({
