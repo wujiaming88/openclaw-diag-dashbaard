@@ -371,22 +371,43 @@ def safe_read_lines(filepath, max_lines=MAX_LOG_LINES):
 
 
 def parse_time(ts):
-    """解析时间戳字符串，返回 datetime 对象（UTC）"""
+    """解析时间戳字符串，返回 naive datetime 对象（已转换为 UTC）。
+
+    支持带时区偏移的时间戳（如 +08:00、+00:00、Z），
+    先转换到 UTC 再去掉 tzinfo，确保所有来源的时间在同一时区下比较。
+    """
     if not ts:
         return None
-    # 去掉尾部时区偏移便于解析
     ts = ts.strip()
-    # 格式: 2026-03-11T11:34:43.722+00:00 或 2026-03-11T11:34:43.721Z
-    ts = ts.replace("Z", "+00:00")
-    # 去掉最后的 +00:00 做 naive datetime
-    if "+" in ts[10:]:
-        ts = ts[:ts.rindex("+")]
-    elif ts.endswith("-00:00"):
-        ts = ts[:-6]
-    # 解析
+    # 尝试用 fromisoformat 直接解析（Python 3.7+ 支持大部分 ISO 格式）
+    # 先统一 Z -> +00:00
+    ts_normalized = ts.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(ts_normalized)
+        # 如果带时区信息，转换为 UTC 再去掉 tzinfo
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except (ValueError, TypeError):
+        pass
+    # fallback: 去掉时区手动解析（兼容老格式）
+    ts_clean = ts_normalized
+    # 提取并处理时区偏移
+    tz_offset = None
+    tz_match = re.search(r'([+-])(\d{2}):(\d{2})$', ts_clean)
+    if tz_match:
+        sign = 1 if tz_match.group(1) == '+' else -1
+        hours = int(tz_match.group(2))
+        minutes = int(tz_match.group(3))
+        tz_offset = timedelta(hours=hours, minutes=minutes) * sign
+        ts_clean = ts_clean[:tz_match.start()]
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return datetime.strptime(ts, fmt)
+            dt = datetime.strptime(ts_clean, fmt)
+            # 如果有时区偏移，转换到 UTC
+            if tz_offset is not None:
+                dt = dt - tz_offset
+            return dt
         except ValueError:
             continue
     return None
