@@ -53,7 +53,7 @@ MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 PROBES = {
     "health": {
         "cmd": ["openclaw", "health", "--json"],
-        "timeout": 15,
+        "timeout": 30,
         "format": "json",
         "label": "健康检查",
         "description": "频道状态、Agent列表、Session统计",
@@ -61,7 +61,7 @@ PROBES = {
     },
     "gateway_status": {
         "cmd": ["openclaw", "gateway", "status", "--json"],
-        "timeout": 15,
+        "timeout": 30,
         "format": "json",
         "label": "Gateway 状态",
         "description": "服务状态、PID、端口、RPC探测",
@@ -69,7 +69,7 @@ PROBES = {
     },
     "config_validate": {
         "cmd": ["openclaw", "config", "validate"],
-        "timeout": 5,
+        "timeout": 15,
         "format": "text",
         "label": "配置校验",
         "description": "校验配置文件语法和结构",
@@ -85,7 +85,7 @@ PROBES = {
     },
     "update_status": {
         "cmd": ["openclaw", "update", "status"],
-        "timeout": 10,
+        "timeout": 30,
         "format": "text",
         "label": "版本状态",
         "description": "当前版本、更新通道、可用更新",
@@ -93,7 +93,7 @@ PROBES = {
     },
     "models_status": {
         "cmd": ["openclaw", "models", "status"],
-        "timeout": 10,
+        "timeout": 30,
         "format": "text",
         "label": "模型状态",
         "description": "已配置模型、默认模型、fallback 列表",
@@ -3138,35 +3138,29 @@ def _print_health_summary(data):
     if not isinstance(data, dict):
         print("  %s" % str(data)[:300])
         return
-    channels = data.get("channels", {})
-    if isinstance(channels, dict):
-        for ch_name, ch_info in channels.items():
-            if isinstance(ch_info, dict):
-                accounts = ch_info.get("accounts", [])
-                status = ch_info.get("status", "unknown")
-                print("  频道: %s (%d accounts, %s)" % (ch_name, len(accounts) if isinstance(accounts, list) else 0, status))
-            else:
-                print("  频道: %s" % ch_name)
+    # Agents
     agents = data.get("agents", [])
-    if isinstance(agents, list):
+    if isinstance(agents, list) and agents:
         agent_names = []
         for a in agents:
             if isinstance(a, dict):
-                agent_names.append(a.get("id", a.get("name", "?")))
+                agent_names.append(a.get("name", a.get("agentId", "?")))
             elif isinstance(a, str):
                 agent_names.append(a)
-        print("  Agent: %d (%s)" % (len(agent_names), ", ".join(agent_names[:10])))
+        print("  Agent: %d 个 (%s)" % (len(agent_names), ", ".join(agent_names[:10])))
+        # 每个 agent 的 session 数
+        for a in agents:
+            if isinstance(a, dict):
+                aid = a.get("agentId", a.get("id", a.get("name", "?")))
+                a_sessions = a.get("sessions", {})
+                if isinstance(a_sessions, dict):
+                    count = a_sessions.get("count", "?")
+                    print("    %s: %s sessions" % (aid, count))
+    # 全局 sessions
     sessions = data.get("sessions", {})
     if isinstance(sessions, dict):
-        parts = []
-        for sid, sinfo in list(sessions.items())[:5]:
-            if isinstance(sinfo, dict):
-                count = sinfo.get("count", sinfo.get("total", "?"))
-                parts.append("%s: %s" % (sid, count))
-            else:
-                parts.append("%s: %s" % (sid, sinfo))
-        if parts:
-            print("  Session: %s" % ", ".join(parts))
+        total = sessions.get("count", "?")
+        print("  Session 总数: %s" % total)
 
 
 def _print_gateway_summary(data):
@@ -3174,15 +3168,29 @@ def _print_gateway_summary(data):
     if not isinstance(data, dict):
         print("  %s" % str(data)[:300])
         return
-    pid = data.get("pid", data.get("mainPID", "?"))
-    port = data.get("port", "?")
-    status = data.get("status", data.get("state", "?"))
+    # service.runtime
+    service = data.get("service", {})
+    runtime = service.get("runtime", {}) if isinstance(service, dict) else {}
+    pid = runtime.get("pid", "?") if isinstance(runtime, dict) else "?"
+    state = runtime.get("state", "?") if isinstance(runtime, dict) else "?"
+    sub_state = runtime.get("subState", "") if isinstance(runtime, dict) else ""
+    state_str = "%s/%s" % (state, sub_state) if sub_state else state
+    # gateway
+    gw = data.get("gateway", {})
+    port = gw.get("port", "?") if isinstance(gw, dict) else "?"
+    bind_mode = gw.get("bindMode", "") if isinstance(gw, dict) else ""
+    # rpc
     rpc = data.get("rpc", {})
-    rpc_status = rpc.get("status", "?") if isinstance(rpc, dict) else "?"
-    print("  PID: %s | 端口: %s | 状态: %s | RPC: %s" % (pid, port, status, rpc_status))
-    uptime = data.get("uptime", "")
-    if uptime:
-        print("  运行时间: %s" % uptime)
+    rpc_ok = rpc.get("ok", False) if isinstance(rpc, dict) else False
+    rpc_str = "✅ 正常" if rpc_ok else "❌ 异常"
+    print("  PID: %s | 端口: %s (%s) | 状态: %s | RPC: %s" % (pid, port, bind_mode, state_str, rpc_str))
+    # config audit
+    config_audit = service.get("configAudit", {}) if isinstance(service, dict) else {}
+    if isinstance(config_audit, dict):
+        audit_ok = config_audit.get("ok", True)
+        issues = config_audit.get("issues", [])
+        if not audit_ok and issues:
+            print("  ⚠️ 配置问题: %s" % "; ".join(str(i) for i in issues[:3]))
 
 
 def main():
