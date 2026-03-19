@@ -296,7 +296,9 @@ def extract_tool_summary(name, args):
 
 if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
     # 扫描所有 agent 的 sessions 目录
-    session_dirs = glob.glob(os.path.join(os.path.dirname(SESSIONS_DIR), "*/sessions"))
+    # 往上两层到 agents/ 目录，扫描所有 agent 的 sessions
+    agents_root = os.path.dirname(os.path.dirname(SESSIONS_DIR))  # agents/main/sessions → agents/
+    session_dirs = glob.glob(os.path.join(agents_root, "*/sessions"))
     if not session_dirs:
         session_dirs = [SESSIONS_DIR]
     all_session_files = []
