@@ -110,6 +110,7 @@ tr.clickable:hover td{background:var(--hover)}
 .status-error{color:var(--red)}
 .status-aborted{color:var(--yellow)}
 .status-running{color:var(--accent);animation:pulse 1.5s infinite}
+.status-virtual{color:#9370DB}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 .slow{color:var(--red);font-weight:600}
 .medium{color:var(--yellow)}
@@ -355,3 +356,4 @@ tr.clickable:hover td{background:var(--hover)}
 .src-badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:4px;font-weight:500;white-space:nowrap}
 .src-session{background:rgba(46,160,67,0.15);color:#2ea043}
 .src-log{background:rgba(201,144,38,0.15);color:#c9902a}
+.virtual-tag{color:#9370DB;font-size:0.8em;margin-right:4px}

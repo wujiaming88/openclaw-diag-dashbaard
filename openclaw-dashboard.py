@@ -2282,7 +2282,8 @@ class DataStore(object):
     def _load_runs(self, date):
         filepath = os.path.join(self.log_dir, "openclaw-%s.log" % date)
         if not os.path.isfile(filepath):
-            return OrderedDict()
+            # 无日志文件时，尝试从 session 数据构造虚拟 runs
+            return self._build_virtual_runs(date)
         try:
             mtime = os.path.getmtime(filepath)
         except OSError:
@@ -2293,6 +2294,142 @@ class DataStore(object):
             return cached[1]
         runs = parse_log_events(filepath)
         self._cache[cache_key] = (mtime, runs)
+        return runs
+
+    def _build_virtual_runs(self, date):
+        """从 session 数据构造虚拟 runs（无 debug 日志时的回退方案）"""
+        import time as _time
+        cache_key = "virtual:%s" % date
+        cached = self._cache.get(cache_key)
+        if cached and (_time.monotonic() - cached[0]) < self._CACHE_TTL:
+            return cached[1]
+
+        self._get_tool_data()
+        all_mc = self._model_calls or []
+
+        # 按日期过滤 model_calls，按 session 分组
+        session_groups = {}  # session_id -> [model_call]
+        for mc in all_mc:
+            mc_ts = mc.get("timestamp", "")
+            if mc_ts[:10] != date:
+                continue
+            # 用 session_id_file 作为 session 标识（与文件名一致）
+            sid = mc.get("session_id_file", "") or mc.get("session_id", "")
+            if not sid:
+                continue
+            if sid not in session_groups:
+                session_groups[sid] = []
+            session_groups[sid].append(mc)
+
+        if not session_groups:
+            return OrderedDict()
+
+        runs = OrderedDict()
+        vrun_idx = 0
+        for sid, mcs in sorted(session_groups.items(), key=lambda x: min(m.get("timestamp", "") for m in x[1])):
+            vrun_idx += 1
+            vrun_id = "virtual-%d" % vrun_idx
+
+            sorted_mcs = sorted(mcs, key=lambda m: m.get("timestamp", ""))
+            first_ts_str = sorted_mcs[0].get("timestamp", "")
+            last_ts_str = sorted_mcs[-1].get("timestamp", "")
+
+            v_start = parse_time(first_ts_str)
+            v_end = parse_time(last_ts_str)
+            if not v_start:
+                continue
+
+            # 从第一个推理事件推算开始时间（减去 inference_ms）
+            first_inf_ms = sorted_mcs[0].get("inference_ms", 0)
+            if first_inf_ms > 0 and v_start:
+                v_start = v_start - timedelta(milliseconds=first_inf_ms)
+
+            # 收集模型
+            v_model = ""
+            for mc in sorted_mcs:
+                if mc.get("model"):
+                    v_model = mc["model"]
+                    break
+
+            # 收集渠道（从 tool_calls 中的 session_spawn 或 message 推断）
+            v_channel = ""
+
+            # 收集工具调用
+            v_tools = []
+            tool_data = self._get_tool_data_nonblocking()
+            for mc in sorted_mcs:
+                content_summary = mc.get("content_summary", {})
+                tool_calls = content_summary.get("tool_calls", [])
+                for tc in tool_calls:
+                    tc_id = tc.get("id", "")
+                    tc_name = tc.get("name", "")
+                    td = tool_data.get(tc_id, {})
+                    dur_ms = 0
+                    details = td.get("details", {})
+                    if isinstance(details, dict):
+                        dur_ms = details.get("durationMs", 0) or details.get("tookMs", 0)
+                    v_tools.append({
+                        "tool": tc_name,
+                        "toolCallId": tc_id,
+                        "start": None,
+                        "end": None,
+                        "virtual_duration_ms": dur_ms,
+                    })
+
+            # 计算总时长
+            duration_ms = 0
+            if v_start and v_end:
+                duration_ms = int((v_end - v_start).total_seconds() * 1000)
+
+            # 提取 agent 名称（从 sessions_dirs 路径推断）
+            agent_name = ""
+            for d in self.sessions_dirs:
+                parts = d.replace("\\", "/").split("/")
+                for i, p in enumerate(parts):
+                    if p == "agents" and i + 1 < len(parts):
+                        # 检查此 session_id 是否属于此 agent dir
+                        for ext_pat in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+                            for f in glob.glob(os.path.join(d, ext_pat)):
+                                fn = os.path.basename(f)
+                                fn_base = fn
+                                for _sfx in [".deleted.", ".reset."]:
+                                    _idx = fn_base.find(_sfx)
+                                    if _idx >= 0:
+                                        fn_base = fn_base[:_idx]
+                                fn_base = fn_base.replace(".jsonl", "")
+                                if fn_base == sid:
+                                    agent_name = parts[i + 1]
+                                    break
+                            if agent_name:
+                                break
+                    if agent_name:
+                        break
+                if agent_name:
+                    break
+            session_key = "%s:%s" % (agent_name, sid) if agent_name else sid
+
+            runs[vrun_id] = {
+                "run_id": vrun_id,
+                "session_id": sid,
+                "model": v_model,
+                "channel": v_channel,
+                "provider": "",
+                "start": v_start,
+                "start_str": first_ts_str,
+                "agent_start": v_start,
+                "agent_end": v_end,
+                "end": v_end,
+                "duration_ms": duration_ms,
+                "tools": v_tools,
+                "is_error": False,
+                "aborted": False,
+                "prompt_info": {
+                    "sessionKey": session_key,
+                },
+                "virtual": True,
+            }
+
+        self._cache[cache_key] = (_time.monotonic(), runs)
         return runs
 
     def _load_events(self, date):
@@ -2476,8 +2613,11 @@ class DataStore(object):
         result["models_used"] = models_used
 
         if not advanced_mode:
-            # 标准模式不需要 Run 级别统计
-            result["total_runs"] = 0
+            # 标准模式：尝试从虚拟 runs 获取基础统计
+            runs = self._load_runs(date)
+            has_virtual = any(r.get("virtual") for r in runs.values()) if runs else False
+            result["total_runs"] = len(runs)
+            result["has_virtual_runs"] = has_virtual
             result["avg_duration_ms"] = 0
             result["total_infer_ms"] = 0
             result["total_tool_ms"] = 0
@@ -2486,6 +2626,11 @@ class DataStore(object):
             result["error_count"] = 0
             result["models"] = []
             result["channels"] = []
+            if runs and has_virtual:
+                durations = [r.get("duration_ms", 0) for r in runs.values() if r.get("duration_ms", 0) > 0]
+                result["avg_duration_ms"] = int(sum(durations) / len(durations)) if durations else 0
+                models = set(r.get("model", "") for r in runs.values() if r.get("model"))
+                result["models"] = sorted(models)
             return result
 
         # === 高级模式：添加 Run 级别统计 ===
@@ -2529,6 +2674,8 @@ class DataStore(object):
             for t in run.get("tools", []):
                 if t.get("start") and t.get("end"):
                     total_tool += ms_between(t["start"], t["end"])
+                elif t.get("virtual_duration_ms", 0) > 0:
+                    total_tool += t["virtual_duration_ms"]
                 tc_id = t.get("toolCallId", "")
                 td = tool_data.get(tc_id, {})
                 usage = td.get("usage", {})
@@ -2568,7 +2715,9 @@ class DataStore(object):
         avg_tok_per_s = round(total_tokens / (total_infer / 1000.0), 1) if total_infer > 0 else 0
 
         # 更新 result 添加 Run 级别统计
+        has_virtual = any(r.get("virtual") for r in runs.values()) if runs else False
         result["total_runs"] = len(runs)
+        result["has_virtual_runs"] = has_virtual
         result["avg_duration_ms"] = avg_dur
         result["total_infer_ms"] = total_infer
         result["total_tool_ms"] = total_tool
@@ -2828,6 +2977,8 @@ class DataStore(object):
             for t in run.get("tools", []):
                 if t.get("start") and t.get("end"):
                     tool_ms += ms_between(t["start"], t["end"])
+                elif t.get("virtual_duration_ms", 0) > 0:
+                    tool_ms += t["virtual_duration_ms"]
                 tc_id = t.get("toolCallId", "")
                 td = tool_data.get(tc_id, {})
                 usage = td.get("usage", {})
@@ -2847,8 +2998,11 @@ class DataStore(object):
                         seen_usage_ids.add(id(u))
                         token_output += u.get("output", 0)
                         break  # 一个 run 最多匹配一个 text reply
+            is_virtual = run.get("virtual", False)
             status = "ok"
-            if run.get("is_error"):
+            if is_virtual:
+                status = "virtual"
+            elif run.get("is_error"):
                 status = "error"
             elif run.get("aborted"):
                 status = "aborted"
@@ -2872,6 +3026,7 @@ class DataStore(object):
                 "tool_count": tool_count,
                 "token_output": token_output,
                 "status": status,
+                "virtual": is_virtual,
             })
         # Sort by start time descending (newest first)
         all_results.sort(key=lambda r: r["start"], reverse=True)

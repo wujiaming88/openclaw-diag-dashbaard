@@ -656,6 +656,34 @@ if not sorted_runs and all_infer_events:
         sorted_runs = sorted_runs[-LAST_N:]
 
 # ============================================================
+# 3.6 日期过滤全局数据 (虚拟 Run 模式下，确保统计只包含目标日期)
+# ============================================================
+if DIAG_DATE:
+    # 收集目标日期所有 session 推理事件的 tool_ids 和 timestamps
+    date_valid_tool_ids = set()
+    date_valid_timestamps = set()
+    for evt in all_infer_events:
+        send_ts = evt.get("send_ts", "")
+        recv_ts = evt.get("recv_ts", "")
+        if send_ts[:10] == DIAG_DATE or recv_ts[:10] == DIAG_DATE:
+            date_valid_timestamps.add(recv_ts)
+    # 从 inference_usage 中收集日期匹配的 tool_ids
+    for tid, u in list(inference_usage.items()):
+        if u.get("timestamp", "")[:10] == DIAG_DATE:
+            date_valid_tool_ids.update(u.get("tool_ids", []))
+            date_valid_tool_ids.add(tid)
+    # 过滤 tool_params
+    tool_params = {k: v for k, v in tool_params.items() if k in date_valid_tool_ids}
+    # 过滤 tool_details
+    tool_details = {k: v for k, v in tool_details.items() if k in date_valid_tool_ids}
+    # 过滤 inference_usage
+    inference_usage = {k: v for k, v in inference_usage.items() if v.get("timestamp", "")[:10] == DIAG_DATE}
+    # 过滤 text_reply_usage
+    text_reply_usage = [(ts, u) for ts, u in text_reply_usage if ts[:10] == DIAG_DATE]
+    # 过滤 all_infer_events (用于后续统计)
+    all_infer_events = [e for e in all_infer_events if e.get("send_ts", "")[:10] == DIAG_DATE or e.get("recv_ts", "")[:10] == DIAG_DATE]
+
+# ============================================================
 # 4. 摘要统计
 # ============================================================
 print("=" * 68)
