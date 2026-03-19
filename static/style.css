@@ -350,3 +350,8 @@ tr.clickable:hover td{background:var(--hover)}
 
 /* Thinking 列 */
 .thinking-bar{display:inline-block;height:8px;border-radius:4px;background:var(--purple);opacity:0.7;vertical-align:middle;min-width:2px;max-width:60px}
+
+/* Source badges for inference segments */
+.src-badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:4px;font-weight:500;white-space:nowrap}
+.src-session{background:rgba(46,160,67,0.15);color:#2ea043}
+.src-log{background:rgba(201,144,38,0.15);color:#c9902a}

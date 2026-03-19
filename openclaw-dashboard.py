@@ -34,7 +34,7 @@ import threading
 import time
 import traceback
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
@@ -1778,6 +1778,93 @@ def compute_infer_segments(run):
     return segments
 
 
+def compute_infer_segments_from_session(run, model_calls):
+    """从 session.jsonl 的 model_calls 中提取属于该 run 的推理分段。
+
+    session 优先策略：如果能从 model_calls 获取推理事件，返回分段列表；
+    否则返回空列表，由调用方 fallback 到 compute_infer_segments()。
+    """
+    if not model_calls:
+        return []
+
+    run_start = run.get("start")
+    run_end = run.get("end") or run.get("agent_end")
+    if not run_start:
+        return []
+
+    # 确保 run_start / run_end 是 aware datetime（UTC）
+    if run_start and run_start.tzinfo is None:
+        run_start = run_start.replace(tzinfo=timezone.utc)
+    if run_end and run_end.tzinfo is None:
+        run_end = run_end.replace(tzinfo=timezone.utc)
+
+    session_id = run.get("session_id", "")
+
+    matched = []
+    for mc in model_calls:
+        ts_str = mc.get("timestamp", "")
+        if not ts_str:
+            continue
+        try:
+            mc_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+
+        # 时间范围匹配
+        if mc_dt < run_start:
+            continue
+        if run_end and mc_dt > run_end:
+            continue
+
+        # session_id 匹配（如果有）
+        if session_id:
+            mc_sid = mc.get("session_id", "")
+            mc_sid_file = mc.get("session_id_file", "")
+            if mc_sid and mc_sid_file:
+                if mc_sid != session_id and mc_sid_file != session_id:
+                    continue
+
+        matched.append((mc_dt, mc))
+
+    if not matched:
+        return []
+
+    # 按时间正序
+    matched.sort(key=lambda x: x[0])
+
+    segments = []
+    for i, (mc_dt, mc) in enumerate(matched):
+        inference_ms = mc.get("inference_ms", 0)
+        if inference_ms <= 0:
+            inference_ms = 0
+
+        # 推理结束 = mc_dt，推理开始 = mc_dt - inference_ms
+        # 转为 naive datetime 以与 run.start/end 保持一致（parse_ts 返回 naive）
+        end_dt = mc_dt.replace(tzinfo=None)
+        if inference_ms > 0:
+            start_dt = (mc_dt - timedelta(milliseconds=inference_ms)).replace(tzinfo=None)
+        else:
+            start_dt = end_dt
+
+        usage = mc.get("usage", {})
+        input_tokens = usage.get("input", 0) if isinstance(usage, dict) else 0
+        output_tokens = usage.get("output", 0) if isinstance(usage, dict) else 0
+        tokens_per_sec = mc.get("tokens_per_sec", 0)
+
+        segments.append({
+            "label": "推理 #%d" % (i + 1),
+            "start": start_dt,
+            "end": end_dt,
+            "duration_ms": inference_ms,
+            "tool_indices": [],
+            "source": "session",
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "tokens_per_sec": tokens_per_sec,
+        })
+
+    return segments
+
 
 # ============================================================
 # 系统信息
@@ -2380,6 +2467,7 @@ class DataStore(object):
         models = set()
         channels = set()
         tool_data = self._get_tool_data_nonblocking()
+        all_model_calls = self._model_calls or []
         for run in runs.values():
             dur = run.get("duration_ms", 0)
             if dur > 0:
@@ -2390,7 +2478,9 @@ class DataStore(object):
                 models.add(run["model"])
             if run.get("channel"):
                 channels.add(run["channel"])
-            segs = compute_infer_segments(run)
+            # session 优先，日志兜底
+            session_segs = compute_infer_segments_from_session(run, all_model_calls)
+            segs = session_segs if session_segs else compute_infer_segments(run)
             for s in segs:
                 total_infer += s["duration_ms"]
             for t in run.get("tools", []):
@@ -2657,9 +2747,12 @@ class DataStore(object):
         runs = self._load_runs(date)
         tool_data = self._get_tool_data_nonblocking()
         text_reply_usage = self._get_text_reply_usage_nonblocking()
+        all_model_calls = self._model_calls or []
         all_results = []
         for run in runs.values():
-            infer_segs = compute_infer_segments(run)
+            # session 优先，日志兜底
+            session_segs = compute_infer_segments_from_session(run, all_model_calls)
+            infer_segs = session_segs if session_segs else compute_infer_segments(run)
             infer_ms = sum(s["duration_ms"] for s in infer_segs)
             tool_ms = 0
             tool_count = len(run.get("tools", []))
@@ -2749,7 +2842,11 @@ class DataStore(object):
         text_reply_usage = self._get_text_reply_usage()
         tool_results = self._get_tool_results()
 
-        infer_segs = compute_infer_segments(run)
+        # session 优先，日志兜底
+        all_model_calls = self._model_calls or []
+        session_segs = compute_infer_segments_from_session(run, all_model_calls)
+        infer_segs = session_segs if session_segs else compute_infer_segments(run)
+        infer_source = "session" if session_segs else "log"
         run_start_str = run["start"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("start") else ""
         run_end_str = run["end"].strftime("%Y-%m-%dT%H:%M:%S") if run.get("end") else ""
 
@@ -2761,49 +2858,71 @@ class DataStore(object):
 
         infer_list = []
         for i, s in enumerate(infer_segs):
-            output_tokens = 0
-            usage_rec = {}
-            sorted_tools = sorted([t for t in run.get("tools", []) if t.get("start")], key=lambda t: t["start"])
-            tool_indices = s.get("tool_indices", [])
+            seg_source = s.get("source", "log")
 
-            if tool_indices:
-                # Collect usage from all tools in this batch, deduplicating
-                for ti in tool_indices:
-                    if ti < len(sorted_tools):
-                        tc_id = sorted_tools[ti].get("toolCallId", "")
-                        td = tool_data.get(tc_id, {})
-                        u = td.get("usage", {})
-                        if u and id(u) not in seen_usage_ids:
-                            seen_usage_ids.add(id(u))
-                            output_tokens += u.get("output", 0)
-                            total_input += u.get("input", 0)
-                            total_output += u.get("output", 0)
-                            total_cache_read += u.get("cacheRead", 0)
-                            total_cache_write += u.get("cacheWrite", 0)
-                            usage_rec = u  # keep last for reference
-            elif run.get("end"):
-                # Final segment (生成回复) or no-tool run: find text reply usage
-                for ts_str, u in text_reply_usage:
-                    if run_start_str and run_end_str:
-                        if ts_str[:19] >= run_start_str and ts_str[:19] <= run_end_str:
-                            if id(u) not in seen_usage_ids:
-                                usage_rec = u
-                                output_tokens = u.get("output", 0)
+            if seg_source == "session":
+                # session 来源：直接使用 model_call 中的 token 数据
+                output_tokens = s.get("output_tokens", 0)
+                input_tokens = s.get("input_tokens", 0)
+                total_input += input_tokens
+                total_output += output_tokens
+                tok_per_s = s.get("tokens_per_sec", 0)
+                dur_s = s["duration_ms"] / 1000.0 if s["duration_ms"] > 0 else 0.001
+                if tok_per_s == 0 and output_tokens > 0:
+                    tok_per_s = round(output_tokens / dur_s, 1)
+                infer_list.append({
+                    "label": s["label"],
+                    "duration_ms": s["duration_ms"],
+                    "output_tokens": output_tokens,
+                    "tok_per_s": tok_per_s,
+                    "source": "session",
+                })
+            else:
+                # log 来源：原有逻辑
+                output_tokens = 0
+                usage_rec = {}
+                sorted_tools = sorted([t for t in run.get("tools", []) if t.get("start")], key=lambda t: t["start"])
+                tool_indices = s.get("tool_indices", [])
+
+                if tool_indices:
+                    # Collect usage from all tools in this batch, deduplicating
+                    for ti in tool_indices:
+                        if ti < len(sorted_tools):
+                            tc_id = sorted_tools[ti].get("toolCallId", "")
+                            td = tool_data.get(tc_id, {})
+                            u = td.get("usage", {})
+                            if u and id(u) not in seen_usage_ids:
                                 seen_usage_ids.add(id(u))
+                                output_tokens += u.get("output", 0)
                                 total_input += u.get("input", 0)
                                 total_output += u.get("output", 0)
                                 total_cache_read += u.get("cacheRead", 0)
                                 total_cache_write += u.get("cacheWrite", 0)
-                                break
+                                usage_rec = u  # keep last for reference
+                elif run.get("end"):
+                    # Final segment (生成回复) or no-tool run: find text reply usage
+                    for ts_str, u in text_reply_usage:
+                        if run_start_str and run_end_str:
+                            if ts_str[:19] >= run_start_str and ts_str[:19] <= run_end_str:
+                                if id(u) not in seen_usage_ids:
+                                    usage_rec = u
+                                    output_tokens = u.get("output", 0)
+                                    seen_usage_ids.add(id(u))
+                                    total_input += u.get("input", 0)
+                                    total_output += u.get("output", 0)
+                                    total_cache_read += u.get("cacheRead", 0)
+                                    total_cache_write += u.get("cacheWrite", 0)
+                                    break
 
-            dur_s = s["duration_ms"] / 1000.0 if s["duration_ms"] > 0 else 0.001
-            tok_per_s = round(output_tokens / dur_s, 1) if output_tokens > 0 else 0
-            infer_list.append({
-                "label": s["label"],
-                "duration_ms": s["duration_ms"],
-                "output_tokens": output_tokens,
-                "tok_per_s": tok_per_s,
-            })
+                dur_s = s["duration_ms"] / 1000.0 if s["duration_ms"] > 0 else 0.001
+                tok_per_s = round(output_tokens / dur_s, 1) if output_tokens > 0 else 0
+                infer_list.append({
+                    "label": s["label"],
+                    "duration_ms": s["duration_ms"],
+                    "output_tokens": output_tokens,
+                    "tok_per_s": tok_per_s,
+                    "source": "log",
+                })
 
         tools_list = []
         total_tool_ms = 0
