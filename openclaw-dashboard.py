@@ -41,7 +41,7 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 
 # ============================================================
@@ -728,6 +728,174 @@ def parse_all_events(filepath):
     # Sort timeline by time_full
     events["all_timeline"].sort(key=lambda e: e.get("time_full", ""))
     return events
+
+
+# ============================================================
+# Gateway 重启历史解析
+# ============================================================
+
+def find_log_files(log_dir, date=None):
+    """查找日志文件列表，可选按日期过滤"""
+    if date:
+        filepath = os.path.join(log_dir, "openclaw-%s.log" % date)
+        if os.path.isfile(filepath):
+            return [filepath]
+        return []
+    pattern = os.path.join(log_dir, "openclaw-*.log")
+    files = sorted(glob.glob(pattern))
+    return files
+
+
+def parse_gateway_restarts(log_files):
+    """
+    从日志文件解析 Gateway 重启历史。
+    从日志 JSON 提取 4 种事件（SHUTDOWN/TRIGGER/STARTUP/CRASH），
+    按时间排序后配对成重启记录。
+
+    返回: list of {
+        "num": int,
+        "shutdown_utc": str,     # ISO timestamp
+        "startup_utc": str|None, # ISO timestamp, None = NOT RECOVERED
+        "type": str,             # "SIGTERM" | "CRASH"
+        "reason": str,           # 具体原因
+        "downtime_sec": int|None # 停机秒数
+    }
+    """
+    events = []  # [(type, timestamp_str, detail)]
+
+    # Patterns
+    re_shutdown = re.compile(r'received SIGTERM; shutting down')
+    re_trigger = re.compile(r'config change requires gateway restart')
+    re_trigger_detail = re.compile(r'config change requires gateway restart \(([^)]+)\)')
+    re_startup = re.compile(r'heartbeat: started')
+    re_crash = re.compile(r'uncaughtException|unhandledRejection|ENOMEM|SIGKILL|out of memory')
+
+    for filepath in log_files:
+        lines = safe_read_lines(filepath)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            msg = obj.get("1", "")
+            if not isinstance(msg, str):
+                msg = str(msg) if msg else ""
+            if not msg:
+                continue
+
+            ts_str = obj.get("date", "") or obj.get("time", "")
+            if not ts_str:
+                continue
+
+            if re_shutdown.search(msg):
+                events.append(("SHUTDOWN", ts_str, "SIGTERM"))
+            elif re_trigger.search(msg):
+                m = re_trigger_detail.search(msg)
+                detail = m.group(1) if m else "config change"
+                events.append(("TRIGGER", ts_str, detail))
+            elif re_startup.search(msg):
+                events.append(("STARTUP", ts_str, "heartbeat started"))
+            elif re_crash.search(msg):
+                events.append(("CRASH", ts_str, "crash/OOM"))
+
+    # Sort by timestamp, deduplicate by (type, timestamp[:19])
+    events.sort(key=lambda e: e[1])
+    seen = set()
+    unique_events = []
+    for e in events:
+        key = (e[0], e[1][:19])
+        if key not in seen:
+            seen.add(key)
+            unique_events.append(e)
+
+    # Pair events into restart records
+    restarts = []
+    restart_num = 0
+    shutdown_ts = None
+    trigger_reason = ""
+    restart_type = ""
+
+    for etype, ts, detail in unique_events:
+        if etype == "TRIGGER":
+            trigger_reason = detail
+        elif etype in ("SHUTDOWN", "CRASH"):
+            shutdown_ts = ts
+            if etype == "CRASH":
+                restart_type = "CRASH"
+                trigger_reason = detail
+            else:
+                restart_type = "SIGTERM"
+                if not trigger_reason:
+                    trigger_reason = "manual/systemd"
+        elif etype == "STARTUP":
+            if shutdown_ts is None:
+                # First boot, not a restart — skip
+                continue
+            restart_num += 1
+            # Calculate downtime
+            dt_shutdown = parse_time(shutdown_ts)
+            dt_startup = parse_time(ts)
+            downtime_sec = None
+            if dt_shutdown and dt_startup:
+                downtime_sec = int((dt_startup - dt_shutdown).total_seconds())
+
+            restarts.append({
+                "num": restart_num,
+                "shutdown_utc": shutdown_ts,
+                "startup_utc": ts,
+                "type": restart_type or "SIGTERM",
+                "reason": trigger_reason or "unknown",
+                "downtime_sec": downtime_sec,
+            })
+            shutdown_ts = None
+            trigger_reason = ""
+            restart_type = ""
+
+    # Unclosed shutdown (NOT RECOVERED)
+    if shutdown_ts is not None:
+        restart_num += 1
+        restarts.append({
+            "num": restart_num,
+            "shutdown_utc": shutdown_ts,
+            "startup_utc": None,
+            "type": restart_type or "SIGTERM",
+            "reason": trigger_reason or "unknown",
+            "downtime_sec": None,
+        })
+
+    return restarts
+
+
+def get_current_gateway_process():
+    """获取当前 gateway 进程信息"""
+    current_pid = ""
+    current_since = ""
+    try:
+        for svc in ("openclaw-gateway", "openclaw"):
+            result = subprocess.run(
+                ["systemctl", "--user", "show", svc,
+                 "--property=ActiveEnterTimestamp,MainPID"],
+                capture_output=True, text=True, timeout=5,
+                stderr=subprocess.DEVNULL
+            )
+            if result.returncode == 0:
+                props = {}
+                for line in result.stdout.strip().split("\n"):
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        props[k.strip()] = v.strip()
+                pid = props.get("MainPID", "0")
+                since = props.get("ActiveEnterTimestamp", "")
+                if pid and pid != "0" and since:
+                    current_pid = pid
+                    current_since = since
+                    break
+    except Exception:
+        pass
+    return current_pid, current_since
 
 
 # ============================================================
@@ -1674,6 +1842,18 @@ class DataStore(object):
         session_avg_inference_ms = round(session_total_inference_ms / session_inference_count) if session_inference_count > 0 else 0
         session_avg_tokens_per_sec = round(sum(session_tps_values) / len(session_tps_values), 1) if session_tps_values else 0
 
+        # Gateway restart info for summary
+        restart_data = self.get_restarts(date)
+        restart_count = restart_data["total"]
+        last_restart = ""
+        total_downtime_sec = 0
+        if restart_data["restarts"]:
+            last_r = restart_data["restarts"][-1]
+            last_restart = last_r.get("shutdown_utc", "")
+            for r in restart_data["restarts"]:
+                if r.get("downtime_sec") is not None:
+                    total_downtime_sec += r["downtime_sec"]
+
         return {
             "date": date,
             "total_runs": len(runs),
@@ -1694,6 +1874,9 @@ class DataStore(object):
             "session_avg_inference_ms": session_avg_inference_ms,
             "session_avg_tokens_per_sec": session_avg_tokens_per_sec,
             "session_inference_count": session_inference_count,
+            "restart_count": restart_count,
+            "last_restart": last_restart,
+            "total_downtime_sec": total_downtime_sec,
         }
 
     def get_events_summary(self, date):
@@ -1976,6 +2159,18 @@ class DataStore(object):
             "page": page,
             "per_page": per_page,
             "total_pages": total_pages,
+        }
+
+    def get_restarts(self, date=None):
+        """返回 Gateway 重启历史"""
+        log_files = find_log_files(self.log_dir, date)
+        restarts = parse_gateway_restarts(log_files)
+        current_pid, current_since = get_current_gateway_process()
+        return {
+            "restarts": restarts,
+            "total": len(restarts),
+            "current_pid": current_pid,
+            "current_since": current_since,
         }
 
     def get_run_detail(self, date, run_id):
@@ -2366,6 +2561,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "events": self.data_store.get_events_summary(date),
                     "runs": self.data_store.get_runs_list(date, page, per_page),
                     "errors": self.data_store.get_events_errors(date),
+                    "restarts": self.data_store.get_restarts(date),
                 }
                 self._send_json(result)
             elif path == "/api/summary":
@@ -2459,6 +2655,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 severity = params.get("severity", [""])[0] or None
                 err_type = params.get("type", [""])[0] or None
                 result = self.data_store.get_events_errors(date, severity=severity, err_type=err_type)
+                self._send_json(result)
+            elif path == "/api/restarts":
+                date = params.get("date", [""])[0] or None
+                result = self.data_store.get_restarts(date)
                 self._send_json(result)
             elif path == "/api/model_calls":
                 date = params.get("date", [""])[0]

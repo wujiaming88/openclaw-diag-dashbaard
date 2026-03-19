@@ -237,3 +237,20 @@ tr.clickable:hover td{background:var(--hover)}
 .mc-content-block{margin:8px 0;padding:8px 0;border-bottom:1px solid var(--border)}
 .mc-content-block:last-child{border-bottom:none}
 .mc-content-block strong{font-size:12px;display:block;margin-bottom:4px}
+
+/* Gateway 重启历史 */
+.card.restart-card{border-color:var(--yellow);border-width:1px}
+.card.restart-card .value{color:var(--yellow)}
+.card.restart-card.warn .value{color:var(--orange)}
+.restart-current-info{padding:8px 14px;margin-bottom:12px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:13px;color:var(--text2)}
+.restart-current-info strong{color:var(--text)}
+.restarts-scroll{max-height:400px;overflow-y:auto}
+.restarts-table{width:100%;border-collapse:collapse;font-size:13px}
+.restarts-table th{text-align:left;padding:8px 10px;background:var(--bg2);color:var(--text2);font-weight:500;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1}
+.restarts-table td{padding:6px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.restarts-table tr:hover{background:var(--hover)}
+.restarts-table tr.restart-crash{border-left:3px solid var(--red)}
+.restarts-table tr.restart-sigterm{border-left:3px solid var(--yellow)}
+.not-recovered{color:var(--red);font-weight:600}
+.restart-reason{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2);font-size:12px}
+.restart-summary{margin-top:10px;font-size:13px;color:var(--text2);text-align:right;padding:4px 10px}

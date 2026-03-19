@@ -32,6 +32,21 @@ function fmtTok(n) {
   return (n / 1000000).toFixed(2) + 'M';
 }
 
+function fmtDowntime(sec) {
+  if (sec === null || sec === undefined) return '-';
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm' + (sec % 60) + 's';
+  return Math.floor(sec / 3600) + 'h' + Math.floor((sec % 3600) / 60) + 'm';
+}
+
+function fmtShortTs(isoStr) {
+  if (!isoStr) return '-';
+  // Extract MM-DD HH:MM:SS from ISO string
+  var m = isoStr.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return isoStr;
+  return m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] + ':' + m[6];
+}
+
 function speedClass(ms) {
   if (ms > 5000) return 'slow';
   if (ms > 1000) return 'medium';
@@ -231,6 +246,7 @@ var TIPS = {
   // Session 级推理统计
   sessionInferMs: '基于 session 消息时间戳计算的平均推理延迟。精确测量每次模型调用从请求到响应的耗时',
   sessionTps: '基于 session 消息时间戳计算的平均 Token 吞吐量（输出 Token 数 / 推理耗时）',
+  restarts: 'Gateway 重启次数。包括手动重启、配置变更重启和崩溃重启',
 };
 
 function tipAttr(key) {
@@ -259,6 +275,13 @@ function renderSummary(s) {
   html += '<div class="card inference-card"><div class="label">Token 吞吐量' + tipIcon('sessionTps') + '</div><div class="value">' + (s.session_avg_tokens_per_sec || 0) + ' tok/s</div><div class="sub-value">总推理 ' + fmtMs(s.session_total_inference_ms || 0) + '</div></div>';
   var errCls = s.error_count > 0 ? ' error' : '';
   html += '<div class="card' + errCls + '"><div class="label">错误数' + tipIcon('errors') + '</div><div class="value">' + s.error_count + '</div></div>';
+  // Gateway 重启
+  var restartCls = (s.restart_count || 0) > 0 ? ' warn' : '';
+  html += '<div class="card restart-card' + restartCls + '"><div class="label">Gateway 重启' + tipIcon('restarts') + '</div><div class="value">' + (s.restart_count || 0) + '</div>';
+  if ((s.total_downtime_sec || 0) > 0) {
+    html += '<div class="sub-value">停机 ' + fmtDowntime(s.total_downtime_sec) + '</div>';
+  }
+  html += '</div>';
   $('#summaryCards').innerHTML = html;
 
   // 第二行：Token 消耗指标
@@ -403,6 +426,55 @@ window.toggleErrorDetail = function (idx) {
   var el = document.getElementById('err-detail-' + idx);
   if (el) el.classList.toggle('open');
 };
+
+// ============================================================
+// 渲染 — Gateway 重启历史
+// ============================================================
+function renderRestarts(data) {
+  var sec = $('#restartsSection');
+  var body = $('#restartsBody');
+  if (!sec || !body) return;
+  if (!data || !data.restarts || data.restarts.length === 0) {
+    sec.style.display = 'none';
+    return;
+  }
+  sec.style.display = 'block';
+  var restarts = data.restarts;
+  var html = '';
+
+  // Current process info
+  if (data.current_pid) {
+    html += '<div class="restart-current-info">';
+    html += '🟢 当前进程: PID <strong>' + escHtml(data.current_pid) + '</strong>';
+    if (data.current_since) {
+      html += ' &nbsp;启动于: <strong>' + escHtml(data.current_since) + '</strong>';
+    }
+    html += '</div>';
+  }
+
+  html += '<div class="restarts-scroll"><table class="restarts-table"><thead><tr>';
+  html += '<th>#</th><th>停机时间</th><th>恢复时间</th><th>停机时长</th><th>类型</th><th>原因</th>';
+  html += '</tr></thead><tbody>';
+  restarts.forEach(function (r) {
+    var typeCls = r.type === 'CRASH' ? 'restart-crash' : 'restart-sigterm';
+    var typeIcon = r.type === 'CRASH' ? '💥' : '🔄';
+    var recovered = r.startup_utc !== null;
+    html += '<tr class="' + typeCls + '">';
+    html += '<td>' + r.num + '</td>';
+    html += '<td class="mono">' + fmtShortTs(r.shutdown_utc) + '</td>';
+    html += '<td class="mono">' + (recovered ? fmtShortTs(r.startup_utc) : '<span class="not-recovered">NOT RECOVERED</span>') + '</td>';
+    html += '<td>' + (r.downtime_sec !== null ? fmtDowntime(r.downtime_sec) : '-') + '</td>';
+    html += '<td>' + typeIcon + ' ' + escHtml(r.type) + '</td>';
+    html += '<td class="restart-reason">' + escHtml(r.reason) + '</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+
+  // Summary line
+  html += '<div class="restart-summary">共 <strong>' + data.total + '</strong> 次重启</div>';
+
+  body.innerHTML = html;
+}
 
 // 渲染 — Run 列表
 // ============================================================
@@ -713,6 +785,7 @@ function loadData() {
     renderSummary(data.summary);
     renderEventsSummary(data.events);
     renderPipeline(data.events);
+    renderRestarts(data.restarts);
     renderRunList(data.runs);
   });
 }
