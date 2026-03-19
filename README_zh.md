@@ -6,29 +6,23 @@
 
 ## 📸 效果展示
 
-### 标准模式 — KPI 概览
+### Dashboard 概览 — KPI 与系统探测
 
 ![Dashboard Overview](docs/screenshots/dashboard-overview.png)
 
-*3 行 KPI 卡片：核心指标（模型调用数、推理延迟、Token 吞吐量、缓存命中率）、Token 详情、工具与 Thinking 统计。下方为 6 项系统探测面板。*
+*5 行 KPI 卡片：核心指标（Run 总数、推理占比、Token 吞吐量）、Token 详情、消息流水线、工具与 Thinking 统计。下方为 6 项系统探测面板。*
 
-### 标准模式 — Gateway 与会话浏览
+### 标准模式 — 完整页面
 
-![Dashboard Details](docs/screenshots/dashboard-tools.png)
+![Dashboard Standard](docs/screenshots/dashboard-standard.png)
 
-*Gateway 重启历史（事件类型检测）、模型调用记录、会话浏览器。标准模式零配置即可使用。*
+*标准模式完整视图：KPI 概览 → 系统探测 → Gateway 重启历史 → 模型调用记录 → 会话浏览器 → 错误追踪。零配置即可使用。*
 
-### 系统探测面板
-
-![Dashboard Probes](docs/screenshots/dashboard-probes.png)
-
-*6 项内置探测（健康检查、Gateway 状态、配置校验、全面诊断、版本状态、模型状态），支持一键全部执行，实时显示执行状态。*
-
-### 高级诊断模式
+### 高级诊断模式 — 完整页面
 
 ![Dashboard Advanced](docs/screenshots/dashboard-advanced.png)
 
-*高级模式在标准模式基础上，额外提供 Run 级别 KPI（Run 总数、平均耗时、推理占比、消息流水线统计）。*
+*高级模式在标准模式基础上，额外提供 Run 级别详情、事件时间线和调试日志分析。*
 
 ### CLI 命令行模式
 

@@ -6,29 +6,23 @@ A web-based performance diagnostic tool for the [OpenClaw](https://github.com/ni
 
 ## 📸 Screenshots
 
-### Standard Mode — KPI Overview
+### Dashboard Overview — KPI & System Probes
 
 ![Dashboard Overview](docs/screenshots/dashboard-overview.png)
 
-*3 rows of KPI cards: core metrics (model calls, inference latency, token throughput, cache hit ratio), token details, and tool/thinking stats. Probe panel with 6 one-click diagnostics.*
+*5 rows of KPI cards: core metrics (run count, inference ratio, token throughput), token details, message pipeline, and tool/thinking stats. System probe panel with 6 one-click diagnostics.*
 
-### Standard Mode — Gateway & Session Browser
+### Standard Mode — Full Page
 
-![Dashboard Details](docs/screenshots/dashboard-tools.png)
+![Dashboard Standard](docs/screenshots/dashboard-standard.png)
 
-*Gateway restart history with event type detection, model call records, and session browser. Standard mode requires zero configuration.*
+*Complete standard mode view: KPI overview → system probes → Gateway restart history → model call records → session browser → error tracking. Zero configuration needed.*
 
-### System Probes
-
-![Dashboard Probes](docs/screenshots/dashboard-probes.png)
-
-*6 built-in probes (health, gateway status, config validate, full doctor, update status, models status) with live execution status and one-click "Run All".*
-
-### Advanced Mode — Full Diagnostics
+### Advanced Mode — Full Page
 
 ![Dashboard Advanced](docs/screenshots/dashboard-advanced.png)
 
-*Advanced mode adds run-level KPIs (run count, avg duration, inference ratio, message pipeline stats) on top of all standard mode features.*
+*Advanced mode adds run-level details, event timeline, and debug log analysis on top of all standard mode features.*
 
 ### CLI Mode
 
