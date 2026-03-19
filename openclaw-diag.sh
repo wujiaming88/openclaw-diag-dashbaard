@@ -209,6 +209,8 @@ SESSIONS_DIR = os.environ.get("DIAG_SESSIONS_DIR", "")
 # ============================================================
 # toolCallId -> {name, summary, workdir}
 tool_params = {}
+# toolCallId -> {toolName, isError, exitCode, durationMs, status, cwd, diff, url, tookMs, childSessionKey}
+tool_details = {}
 
 # 每次推理的 token 用量: toolCallId -> usage dict
 # 一个 assistant 消息可能包含多个 toolCall, 它们共享同一个 usage
@@ -318,10 +320,29 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                                 prev_top_timestamp = timestamp
                             continue
 
-                        # toolResult 消息: 记录 timestamp
+                        # toolResult 消息: 记录 timestamp + 提取 details
                         if role == "toolResult":
                             if timestamp:
                                 prev_top_timestamp = timestamp
+                            tcid = msg.get("toolCallId", "")
+                            tool_name = msg.get("toolName", "")
+                            is_error = msg.get("isError", False)
+                            details = msg.get("details", {})
+                            if not isinstance(details, dict):
+                                details = {}
+                            if tcid:
+                                tool_details[tcid] = {
+                                    "toolName": tool_name,
+                                    "isError": is_error,
+                                    "exitCode": details.get("exitCode"),
+                                    "durationMs": details.get("durationMs"),
+                                    "status": details.get("status", ""),
+                                    "cwd": details.get("cwd", ""),
+                                    "diff": details.get("diff", ""),
+                                    "url": details.get("url", ""),
+                                    "tookMs": details.get("tookMs"),
+                                    "childSessionKey": details.get("childSessionKey", ""),
+                                }
                             continue
 
                         # 以下仅处理 assistant 消息 (非 delivery-mirror)
@@ -627,6 +648,25 @@ if tool_params:
     print(f"  工具参数已加载:  {len(tool_params)} 条 (来自会话文件)")
 else:
     print(f"  工具参数:        未加载 (会话目录未找到或为空)")
+
+# 工具调用成功率统计 (基于 tool_details)
+if tool_details:
+    td_total = len(tool_details)
+    td_errors = sum(1 for d in tool_details.values() if d.get("isError"))
+    td_success_rate = ((td_total - td_errors) / td_total * 100) if td_total > 0 else 0
+    td_durations = [d["durationMs"] for d in tool_details.values() if d.get("durationMs") is not None and d["durationMs"] > 0]
+    avg_ms_str = f"{sum(td_durations)/len(td_durations):.0f}ms" if td_durations else "N/A"
+    # Top 3 工具
+    td_name_counts = defaultdict(int)
+    for d in tool_details.values():
+        if d.get("toolName"):
+            td_name_counts[d["toolName"]] += 1
+    top3 = sorted(td_name_counts.items(), key=lambda x: -x[1])[:3]
+    top3_str = ", ".join(f"{n}({c})" for n, c in top3)
+    print(f"  工具调用:        {td_total} 次 (失败 {td_errors}, 成功率 {td_success_rate:.0f}%)")
+    print(f"  工具平均耗时:    {avg_ms_str}")
+    if top3_str:
+        print(f"  Top 工具:        {top3_str}")
 print()
 
 if run_durations:
@@ -708,8 +748,19 @@ if SUMMARY_ONLY:
     if errors:
         print()
         print("  最近错误:")
-        for t, msg in errors[-5:]:
-            print(f"    {t[11:19]} [ERROR] {msg[:80]}")
+        for t, emsg in errors[-5:]:
+            display = emsg
+            try:
+                pj = json.loads(emsg)
+                if isinstance(pj, dict):
+                    for k in ("error", "message", "msg"):
+                        if k in pj:
+                            display = f"{k}: {pj[k]}"; break
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            if len(display) > 100:
+                display = display[:97] + "..."
+            print(f"    {t[11:19]} [ERROR] {display}")
     sys.exit(0)
 
 # ============================================================
@@ -791,7 +842,39 @@ for i, (run_id, r) in enumerate(sorted_runs):
             ts = parse_time(tool["start"])
             te = parse_time(tool["end"])
             dur = fmt_duration((te - ts).total_seconds() * 1000) if ts and te else "?"
-            timeline.append((tool["end"], f"[TOOL-END]   工具执行完成: {tname} (耗时 {dur})"))
+            # 附加 details 信息
+            detail_extra = ""
+            td = tool_details.get(tid, {})
+            if td:
+                if tname == "exec":
+                    ec = td.get("exitCode")
+                    dm = td.get("durationMs")
+                    parts = []
+                    if ec is not None:
+                        if ec != 0:
+                            parts.append(f"\033[31mexitCode={ec}\033[0m")
+                        else:
+                            parts.append(f"exitCode={ec}")
+                    if dm is not None:
+                        parts.append(f"duration={dm}ms")
+                    if parts:
+                        detail_extra = "  " + " ".join(parts)
+                elif tname == "edit":
+                    diff = td.get("diff", "")
+                    if diff:
+                        diff_short = diff.replace("\n", " ")[:60]
+                        detail_extra = f"  diff: {diff_short}"
+                elif tname == "web_fetch":
+                    took = td.get("tookMs")
+                    if took is not None:
+                        detail_extra = f"  took={took}ms"
+                elif tname == "sessions_spawn":
+                    csk = td.get("childSessionKey", "")
+                    if csk:
+                        detail_extra = f"  child={csk}"
+                if td.get("isError"):
+                    detail_extra += "  \033[31m[FAILED]\033[0m"
+            timeline.append((tool["end"], f"[TOOL-END]   工具执行完成: {tname} (耗时 {dur}){detail_extra}"))
 
     if r["end"]:
         timeline.append((r["end"], "[RUN-END]    处理完成, 准备返回结果"))
@@ -999,8 +1082,40 @@ if errors:
     print("=" * 68)
     print(f"{'[错误列表]':^64}")
     print("=" * 68)
-    for t, msg in errors[-10:]:
-        print(f"  {t[11:19]}  [ERROR] {msg[:100]}")
+    shown = min(len(errors), 20)
+    print(f"  共 {len(errors)} 条错误，显示最近 {shown} 条:")
+    print()
+    INDENT = "      "
+    MAX_WIDTH = 120
+    for idx, (t, emsg) in enumerate(errors[-20:], 1):
+        # 尝试从 JSON 格式消息中提取关键字段
+        display_msg = emsg
+        try:
+            parsed_json = json.loads(emsg)
+            if isinstance(parsed_json, dict):
+                key_parts = []
+                for k in ("error", "message", "msg", "reason", "description"):
+                    if k in parsed_json:
+                        key_parts.append(f"{k}: {parsed_json[k]}")
+                if key_parts:
+                    display_msg = " | ".join(key_parts)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        print(f"  #{idx:<3} {t[11:19]}  [ERROR]")
+        # 自动换行缩进
+        line = display_msg
+        while len(line) > MAX_WIDTH:
+            # 找一个合适的断点
+            cut = MAX_WIDTH
+            # 尝试在空格处断开
+            sp = line.rfind(" ", 0, cut)
+            if sp > cut // 2:
+                cut = sp + 1
+            print(f"{INDENT}{line[:cut]}")
+            line = line[cut:]
+        if line:
+            print(f"{INDENT}{line}")
+        print()
 
 print()
 print("=" * 68)
