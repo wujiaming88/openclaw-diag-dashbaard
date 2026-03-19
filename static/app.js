@@ -1,4 +1,4 @@
-/* OpenClaw 诊断面板 v2.5.0 — 前端逻辑 */
+/* OpenClaw 诊断面板 v3.0.0 — 前端逻辑 */
 (function () {
 'use strict';
 
@@ -14,6 +14,7 @@ var perPage = 20;
 var mcPage = 1;
 var mcPerPage = 50;
 var dashboardMode = 'standard'; // 'standard' | 'advanced'
+var conversationLoaded = false;
 
 // ============================================================
 // 工具函数
@@ -32,6 +33,13 @@ function fmtTok(n) {
   if (n < 1000) return n.toString();
   if (n < 1000000) return (n / 1000).toFixed(1) + 'k';
   return (n / 1000000).toFixed(2) + 'M';
+}
+
+function fmtChars(n) {
+  if (!n) return '0';
+  if (n < 1000) return n.toString();
+  if (n < 1000000) return (n / 1000).toFixed(1) + 'k';
+  return (n / 1000000).toFixed(1) + 'M';
 }
 
 function fmtCost(v) {
@@ -53,6 +61,15 @@ function fmtShortTs(isoStr) {
   var m = isoStr.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
   if (!m) return isoStr;
   return m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] + ':' + m[6];
+}
+
+function fmtTime(isoStr) {
+  if (!isoStr) return '';
+  if (isoStr.indexOf('T') > -1) {
+    var t = isoStr.split('T')[1] || isoStr;
+    return t.length > 12 ? t.substring(0, 12) : t;
+  }
+  return isoStr;
 }
 
 function speedClass(ms) {
@@ -282,6 +299,12 @@ var TIPS = {
   restarts: 'Gateway 重启次数。包括手动重启、配置变更重启和崩溃重启',
   modelCalls: '当日模型调用总次数。每次 assistant 消息计为一次调用',
   totalCost: '当日模型调用总费用。基于各模型的 Token 单价计算',
+  toolCalls: '工具调用总次数。包括 exec、read、write、edit、web_search 等所有工具',
+  toolErrors: '工具执行失败次数。包括 isError=true 或 exec exitCode!=0',
+  toolAvgMs: '工具执行的平均耗时（毫秒）。基于 details.durationMs 计算',
+  thinkingChars: '模型 thinking 内容的总字符数。反映推理链的深度和复杂度',
+  thinkingRatio: '平均 thinking 占比 = thinking字符 / (thinking + output字符)。越高说明模型在更多内部思考',
+  thinkingCalls: '有 thinking 内容的模型调用次数',
 };
 
 function tipAttr(key) {
@@ -296,13 +319,13 @@ function renderSummary(s) {
   if (!s) {
     $('#summaryCards').innerHTML = '';
     $('#summaryCards2').innerHTML = '';
+    $('#summaryCards4').innerHTML = '';
     return;
   }
 
   var html = '';
 
   if (isAdvanced()) {
-    // 高级模式：显示 Run 级别统计 + session 级统计
     html += '<div class="card"><div class="label">Run 总数' + tipIcon('runs') + '</div><div class="value">' + (s.total_runs || 0) + '</div></div>';
     html += '<div class="card"><div class="label">平均耗时' + tipIcon('avgDur') + '</div><div class="value">' + fmtMs(s.avg_duration_ms) + '</div></div>';
     html += '<div class="card"><div class="label">推理占比' + tipIcon('inferRatio') + '</div><div class="value">' + (s.infer_ratio || 0) + '%</div><div class="ratio-bar"><div class="fill-infer" style="width:' + (s.infer_ratio || 0) + '%"></div><div class="fill-tool" style="width:' + (100 - (s.infer_ratio || 0)) + '%"></div></div></div>';
@@ -311,12 +334,10 @@ function renderSummary(s) {
     html += '<div class="card' + errCls + '"><div class="label">错误数' + tipIcon('errors') + '</div><div class="value">' + (s.error_count || 0) + '</div></div>';
   }
 
-  // 两种模式都显示的指标
   html += '<div class="card"><div class="label">模型调用数' + tipIcon('modelCalls') + '</div><div class="value">' + (s.session_model_call_count || 0) + '</div></div>';
   html += '<div class="card inference-card"><div class="label">平均推理延迟' + tipIcon('sessionInferMs') + '</div><div class="value">' + fmtMs(s.session_avg_inference_ms || 0) + '</div><div class="sub-value">' + (s.session_inference_count || 0) + ' 次调用</div></div>';
   html += '<div class="card inference-card"><div class="label">Token 吞吐量' + tipIcon('sessionTps') + '</div><div class="value">' + (s.session_avg_tokens_per_sec || 0) + ' tok/s</div><div class="sub-value">总推理 ' + fmtMs(s.session_total_inference_ms || 0) + '</div></div>';
 
-  // Gateway 重启
   var restartCls = (s.restart_count || 0) > 0 ? ' warn' : '';
   html += '<div class="card restart-card' + restartCls + '"><div class="label">Gateway 重启' + tipIcon('restarts') + '</div><div class="value">' + (s.restart_count || 0) + '</div>';
   if ((s.total_downtime_sec || 0) > 0) {
@@ -333,9 +354,28 @@ function renderSummary(s) {
   html2 += '<div class="card"><div class="label">缓存写入' + tipIcon('tokenCacheWrite') + '</div><div class="value">' + fmtTok(s.total_cache_write || 0) + '</div></div>';
   var hitCls = (s.cache_hit_ratio || 0) > 80 ? '' : ' warn';
   html2 += '<div class="card' + hitCls + '"><div class="label">缓存命中率' + tipIcon('cacheHit') + '</div><div class="value">' + (s.cache_hit_ratio || 0) + '%</div></div>';
-  // 总费用
   html2 += '<div class="card"><div class="label">总费用' + tipIcon('totalCost') + '</div><div class="value">' + fmtCost(s.total_model_cost || 0) + '</div></div>';
   $('#summaryCards2').innerHTML = html2;
+
+  // 第四行：工具统计 + Thinking 统计
+  var html4 = '';
+  var toolCallCount = s.tool_call_count || 0;
+  var toolErrorCount = s.tool_error_count || 0;
+  var toolAvgMs = s.tool_avg_duration_ms || 0;
+  var toolErrCls = toolErrorCount > 0 ? ' error' : '';
+  html4 += '<div class="card tool-card"><div class="label">工具调用' + tipIcon('toolCalls') + '</div><div class="value">' + toolCallCount + '</div></div>';
+  html4 += '<div class="card tool-card' + toolErrCls + '"><div class="label">工具错误' + tipIcon('toolErrors') + '</div><div class="value">' + toolErrorCount + '</div></div>';
+  html4 += '<div class="card tool-card"><div class="label">工具平均耗时' + tipIcon('toolAvgMs') + '</div><div class="value">' + fmtMs(toolAvgMs) + '</div></div>';
+
+  // Thinking stats
+  var thinkingChars = s.thinking_total_chars || 0;
+  var thinkingCalls = s.thinking_calls_count || 0;
+  var thinkingRatio = s.thinking_avg_ratio || 0;
+  if (thinkingCalls > 0) {
+    html4 += '<div class="card thinking-card"><div class="label">Thinking 字符' + tipIcon('thinkingChars') + '</div><div class="value">' + fmtChars(thinkingChars) + '</div><div class="sub-value">' + thinkingCalls + ' 次调用</div></div>';
+    html4 += '<div class="card thinking-card"><div class="label">Thinking 占比' + tipIcon('thinkingRatio') + '</div><div class="value">' + (thinkingRatio * 100).toFixed(1) + '%</div></div>';
+  }
+  $('#summaryCards4').innerHTML = html4;
 }
 
 // ============================================================
@@ -417,6 +457,52 @@ window.toggleMcRunDetail = function (id) {
   var el = document.getElementById(id);
   if (el) el.classList.toggle('open');
 };
+
+// ============================================================
+// 渲染 — 工具 details 标签
+// ============================================================
+function renderToolDetails(details, toolName) {
+  if (!details || typeof details !== 'object') return '';
+  var html = '';
+  if (toolName === 'exec' || details.exitCode !== undefined) {
+    var ec = details.exitCode;
+    if (ec !== undefined && ec !== null) {
+      var ecCls = (ec === 0) ? 'exit-ok' : 'exit-err';
+      html += '<span class="tool-detail-tag ' + ecCls + '">exit:' + ec + '</span>';
+    }
+    if (details.durationMs) {
+      html += '<span class="tool-detail-tag duration">' + fmtMs(details.durationMs) + '</span>';
+    }
+  } else if (toolName === 'edit' || details.diff !== undefined) {
+    if (details.status) {
+      html += '<span class="tool-detail-tag exit-ok">' + escHtml(details.status) + '</span>';
+    }
+    if (details.diff) {
+      var diffPreview = details.diff.substring(0, 80);
+      html += '<span class="tool-detail-tag diff" title="' + escHtml(details.diff.substring(0, 300)) + '">diff: ' + escHtml(diffPreview) + '</span>';
+    }
+  } else if (toolName === 'web_fetch' || details.tookMs !== undefined) {
+    if (details.tookMs) {
+      html += '<span class="tool-detail-tag fetch">' + fmtMs(details.tookMs) + '</span>';
+    }
+    if (details.contentType) {
+      html += '<span class="tool-detail-tag duration">' + escHtml(details.contentType) + '</span>';
+    }
+  } else if (toolName === 'sessions_spawn' || details.childSessionKey !== undefined) {
+    if (details.status) {
+      html += '<span class="tool-detail-tag exit-ok">' + escHtml(details.status) + '</span>';
+    }
+    if (details.modelApplied) {
+      html += '<span class="tool-detail-tag duration">' + escHtml(shortModel(details.modelApplied)) + '</span>';
+    }
+  } else {
+    // Generic: show durationMs if present
+    if (details.durationMs) {
+      html += '<span class="tool-detail-tag duration">' + fmtMs(details.durationMs) + '</span>';
+    }
+  }
+  return html;
+}
 
 // ============================================================
 // 渲染 — 错误列表 (仅高级模式)
@@ -521,6 +607,10 @@ function renderModelCallsList(data) {
   if (!sec || !body) return;
   sec.style.display = 'block';
 
+  // Show conversation section
+  var convSec = $('#conversationSection');
+  if (convSec) convSec.style.display = 'block';
+
   if (!data || !data.model_calls || data.model_calls.length === 0) {
     body.innerHTML = '<div class="empty" style="padding:24px"><div class="icon">📭</div><p>该日期暂无模型调用数据</p></div>';
     return;
@@ -534,15 +624,11 @@ function renderModelCallsList(data) {
   mcPage = page;
 
   var html = '<div class="model-calls-scroll"><table class="model-calls-table"><thead><tr>';
-  html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>tok/s</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>停止原因</th><th></th>';
+  html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>tok/s</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>💭</th><th>停止原因</th><th></th>';
   html += '</tr></thead><tbody>';
 
   calls.forEach(function (mc, idx) {
-    var mcTs = mc.timestamp || '';
-    if (mcTs.indexOf('T') > -1) {
-      mcTs = mcTs.split('T')[1] || mcTs;
-      if (mcTs.length > 12) mcTs = mcTs.substring(0, 12);
-    }
+    var mcTs = fmtTime(mc.timestamp);
     var mcU = mc.usage || {};
     var mcCost = mc.cost || {};
     var stopCls = (mc.stop_reason === 'stop') ? 'stop' : (mc.stop_reason === 'toolUse' ? 'toolUse' : '');
@@ -557,6 +643,14 @@ function renderModelCallsList(data) {
     var tps = mc.tokens_per_sec || 0;
     var detailId = 'mc-list-' + idx;
 
+    // Thinking column
+    var thinkChars = mc.thinking_chars || 0;
+    var thinkHtml = '-';
+    if (thinkChars > 0) {
+      var barW = Math.min(60, Math.max(4, Math.round(thinkChars / 500)));
+      thinkHtml = '<span class="thinking-bar" style="width:' + barW + 'px" title="' + thinkChars + ' chars (' + ((mc.thinking_ratio || 0) * 100).toFixed(0) + '%)"></span> ' + fmtChars(thinkChars);
+    }
+
     html += '<tr onclick="toggleMcRunDetail(\'' + detailId + '\')" style="cursor:pointer">';
     html += '<td class="mono">' + escHtml(mcTs) + '</td>';
     html += '<td class="model-name">' + escHtml(shortModel(mc.model || '')) + '</td>';
@@ -566,6 +660,7 @@ function renderModelCallsList(data) {
     html += '<td>' + fmtTok(mcU.output || 0) + '</td>';
     html += '<td>' + cacheStr + '</td>';
     html += '<td class="cost">' + costStr + '</td>';
+    html += '<td style="font-size:11px">' + thinkHtml + '</td>';
     html += '<td><span class="stop-tag ' + stopCls + '">' + escHtml(mc.stop_reason || '-') + '</span></td>';
     html += '<td style="font-size:11px;color:var(--text2)">▶</td>';
     html += '</tr>';
@@ -573,7 +668,7 @@ function renderModelCallsList(data) {
     // 展开详情
     var cs = mc.content_summary || {};
     var prompt = mc.prompt || {};
-    html += '<tr><td colspan="10" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
+    html += '<tr><td colspan="11" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
 
     if (prompt.text) {
       var pid = detailId + '-prompt';
@@ -585,7 +680,7 @@ function renderModelCallsList(data) {
       var tid = detailId + '-think';
       var thinkText = cs.thinking_full || cs.thinking_preview || '';
       if (thinkText) {
-        html += '<div class="mc-content-block"><strong>💭 Thinking:</strong>';
+        html += '<div class="mc-content-block"><strong>💭 Thinking (' + fmtChars(thinkChars) + ', ' + ((mc.thinking_ratio || 0) * 100).toFixed(0) + '%):</strong>';
         html += '<span class="collapse-toggle" onclick="toggleBlock(\'' + tid + '\', this)">▶ 展开 (' + thinkText.length + ' 字)</span>';
         html += '<div class="collapsible-content" id="' + tid + '"><pre>' + escHtml(thinkText) + '</pre></div></div>';
       }
@@ -602,9 +697,12 @@ function renderModelCallsList(data) {
     if (cs.tool_calls && cs.tool_calls.length > 0) {
       html += '<div class="mc-content-block"><strong>🔧 工具调用:</strong><div style="margin-top:4px">';
       cs.tool_calls.forEach(function (tc) {
-        html += '<span class="tool-item">' + escHtml(tc.name);
+        html += '<div class="tool-item" style="display:block;margin:4px 0">' + escHtml(tc.name);
         if (tc.args_summary) html += ': ' + escHtml(tc.args_summary);
-        html += '</span>';
+        // Render details
+        var detailsHtml = renderToolDetails(tc.details, tc.name);
+        if (detailsHtml) html += ' ' + detailsHtml;
+        html += '</div>';
       });
       html += '</div></div>';
     }
@@ -643,14 +741,12 @@ window.changeMcPerPage = function (v) {
 // ============================================================
 function renderLockedSections() {
   if (isAdvanced()) {
-    // 高级模式：隐藏锁定提示
     var lockRuns = $('#lockedRunsSection');
     var lockEvents = $('#lockedEventsSection');
     if (lockRuns) lockRuns.style.display = 'none';
     if (lockEvents) lockEvents.style.display = 'none';
     return;
   }
-  // 标准模式：显示锁定提示
   var lockRuns = $('#lockedRunsSection');
   var lockEvents = $('#lockedEventsSection');
   if (lockRuns) lockRuns.style.display = 'block';
@@ -702,7 +798,6 @@ function renderRunList(data) {
   });
   html += '</tbody></table></div>';
 
-  // 分页
   html += '<div class="pagination">';
   html += '<button onclick="goPage(' + (page - 1) + ')"' + (page <= 1 ? ' disabled' : '') + '>◀ 上一页</button>';
   html += '<span class="page-info">第 ' + page + ' / ' + totalPages + ' 页 (共 ' + total + ' 条)</span>';
@@ -716,7 +811,6 @@ function renderRunList(data) {
 
   content.innerHTML = html;
 
-  // 恢复展开的详情
   Object.keys(openRuns).forEach(function (rid) {
     var el = document.getElementById('detail-' + rid);
     if (el) {
@@ -738,7 +832,6 @@ function renderRunDetail(d, el) {
   html += ' &nbsp;输出速率: <strong style="color:var(--text)">' + (d.overall_tok_per_s || 0) + ' tok/s' + tipIcon('tokPerS') + '</strong>';
   html += '</div>';
 
-  // 甘特图
   html += '<div class="gantt-legend"><span><span class="dot infer"></span>推理</span><span><span class="dot tool"></span>工具</span><span style="margin-left:auto;font-size:11px;color:var(--text2)">总耗时: ' + fmtMs(d.duration_ms) + '</span></div>';
   html += '<div class="gantt">';
   if (d.gantt) {
@@ -756,7 +849,6 @@ function renderRunDetail(d, el) {
   var runUid = d.run_id ? d.run_id.substring(0, 8) : 'x';
   html += '<div class="detail-grid">';
 
-  // 推理分段
   html += '<div class="detail-section"><h4>推理分段</h4>';
   if (d.infer_segments && d.infer_segments.length > 0) {
     html += '<table class="detail-table"><thead><tr><th>阶段' + tipIcon('inferSeg') + '</th><th>耗时</th><th>输出 Token' + tipIcon('outputTokens') + '</th><th>速率' + tipIcon('tokPerS') + '</th></tr></thead><tbody>';
@@ -770,7 +862,6 @@ function renderRunDetail(d, el) {
   }
   html += '</div>';
 
-  // 工具调用
   html += '<div class="detail-section"><h4>工具调用 (' + d.tool_count + ')</h4>';
   if (d.tools && d.tools.length > 0) {
     html += '<table class="detail-table"><thead><tr><th>工具</th><th>参数</th><th>耗时</th><th>结果</th></tr></thead><tbody>';
@@ -781,7 +872,12 @@ function renderRunDetail(d, el) {
       var needCollapse = lines.length > 4;
       var hasArgsFull = t.arguments_full && Object.keys(t.arguments_full).length > 0;
       var hasResult = t.result && (t.result.text || t.result.text_preview);
-      html += '<tr><td><strong>' + escHtml(t.tool) + '</strong></td><td class="tool-args">';
+      html += '<tr><td><strong>' + escHtml(t.tool) + '</strong>';
+      // Show details tags
+      if (t.result && t.result.details) {
+        html += '<div style="margin-top:2px">' + renderToolDetails(t.result.details, t.tool) + '</div>';
+      }
+      html += '</td><td class="tool-args">';
       if (argText) {
         html += '<div class="tool-args-wrap' + (needCollapse ? ' collapsed' : '') + '">';
         html += '<pre>' + escHtml(argText) + '</pre>';
@@ -814,7 +910,6 @@ function renderRunDetail(d, el) {
   html += '</div>';
   html += '</div>';
 
-  // 汇总条
   html += '<div class="summary-bar">';
   html += '<div class="item"><div class="val">' + fmtMs(d.duration_ms) + '</div><div class="lbl">端到端' + tipIcon('e2e') + '</div></div>';
   html += '<div class="item"><div class="val">' + fmtMs(d.infer_ms) + '</div><div class="lbl">推理总耗时' + tipIcon('inferTotal') + '</div></div>';
@@ -825,7 +920,6 @@ function renderRunDetail(d, el) {
   html += '<div class="item"><div class="val">' + escHtml(d.channel) + '</div><div class="lbl">通道' + tipIcon('channel') + '</div></div>';
   html += '</div>';
 
-  // Token 摘要
   if (d.token_summary) {
     var ts = d.token_summary;
     html += '<div style="margin-top:8px;font-size:12px;color:var(--text2)">';
@@ -836,19 +930,14 @@ function renderRunDetail(d, el) {
     html += '</div>';
   }
 
-  // 模型调用详情 (嵌入 Run 内)
   if (d.model_calls && d.model_calls.length > 0) {
     html += '<div class="detail-section" style="margin-top:12px"><h4>🤖 模型调用 (' + d.model_calls.length + ' 次)</h4>';
     html += '<table class="model-calls-table"><thead><tr>';
-    html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>输入</th><th>输出</th><th>tok/s</th><th>缓存</th><th>费用</th><th>停止</th><th></th>';
+    html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>输入</th><th>输出</th><th>tok/s</th><th>缓存</th><th>费用</th><th>💭</th><th>停止</th><th></th>';
     html += '</tr></thead><tbody>';
     var rUid = d.run_id ? d.run_id.substring(0, 8) : 'x';
     d.model_calls.forEach(function (mc, mcIdx) {
-      var mcTs = mc.timestamp || '';
-      if (mcTs.indexOf('T') > -1) {
-        mcTs = mcTs.split('T')[1] || mcTs;
-        if (mcTs.length > 12) mcTs = mcTs.substring(0, 12);
-      }
+      var mcTs = fmtTime(mc.timestamp);
       var mcU = mc.usage || {};
       var mcCost = mc.cost || {};
       var stopCls = (mc.stop_reason === 'stop') ? 'stop' : (mc.stop_reason === 'toolUse' ? 'toolUse' : '');
@@ -862,6 +951,14 @@ function renderRunDetail(d, el) {
       var inferCls = speedClass(inferMs);
       var tps = mc.tokens_per_sec || 0;
       var detailId = 'mc-run-' + rUid + '-' + mcIdx;
+
+      var thinkChars = mc.thinking_chars || 0;
+      var thinkHtml = '-';
+      if (thinkChars > 0) {
+        var barW = Math.min(60, Math.max(4, Math.round(thinkChars / 500)));
+        thinkHtml = '<span class="thinking-bar" style="width:' + barW + 'px"></span> ' + fmtChars(thinkChars);
+      }
+
       html += '<tr onclick="toggleMcRunDetail(\'' + detailId + '\')" style="cursor:pointer">';
       html += '<td>' + escHtml(mcTs) + '</td>';
       html += '<td class="model-name">' + escHtml(shortModel(mc.model || '')) + '</td>';
@@ -871,13 +968,14 @@ function renderRunDetail(d, el) {
       html += '<td>' + (tps > 0 ? tps + ' tok/s' : '-') + '</td>';
       html += '<td>' + cacheStr + '</td>';
       html += '<td class="cost">' + costStr + '</td>';
+      html += '<td style="font-size:11px">' + thinkHtml + '</td>';
       html += '<td><span class="stop-tag ' + stopCls + '">' + escHtml(mc.stop_reason || '-') + '</span></td>';
       html += '<td style="font-size:11px;color:var(--text2)">▶</td>';
       html += '</tr>';
 
       var cs = mc.content_summary || {};
       var prompt = mc.prompt || {};
-      html += '<tr><td colspan="10" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
+      html += '<tr><td colspan="11" style="padding:0"><div class="mc-detail" id="' + detailId + '">';
       if (prompt.text) {
         var pid = detailId + '-prompt';
         html += '<div class="mc-content-block"><strong>📝 Prompt:</strong>';
@@ -888,7 +986,7 @@ function renderRunDetail(d, el) {
         var tid = detailId + '-think';
         var thinkText = cs.thinking_full || cs.thinking_preview || '';
         if (thinkText) {
-          html += '<div class="mc-content-block"><strong>💭 Thinking:</strong>';
+          html += '<div class="mc-content-block"><strong>💭 Thinking (' + fmtChars(thinkChars) + '):</strong>';
           html += '<span class="collapse-toggle" onclick="toggleBlock(\'' + tid + '\', this)">▶ 展开 (' + thinkText.length + ' 字)</span>';
           html += '<div class="collapsible-content" id="' + tid + '"><pre>' + escHtml(thinkText) + '</pre></div></div>';
         }
@@ -905,9 +1003,11 @@ function renderRunDetail(d, el) {
       if (cs.tool_calls && cs.tool_calls.length > 0) {
         html += '<div class="mc-content-block"><strong>🔧 工具调用:</strong><div style="margin-top:4px">';
         cs.tool_calls.forEach(function (tc) {
-          html += '<span class="tool-item">' + escHtml(tc.name);
+          html += '<div class="tool-item" style="display:block;margin:4px 0">' + escHtml(tc.name);
           if (tc.args_summary) html += ': ' + escHtml(tc.args_summary);
-          html += '</span>';
+          var detailsHtml = renderToolDetails(tc.details, tc.name);
+          if (detailsHtml) html += ' ' + detailsHtml;
+          html += '</div>';
         });
         html += '</div></div>';
       }
@@ -916,7 +1016,6 @@ function renderRunDetail(d, el) {
     html += '</tbody></table></div>';
   }
 
-  // Prompt 信息
   if (d.prompt_info && d.prompt_info.messages) {
     html += '<div style="margin-top:4px;font-size:12px;color:var(--text2)">';
     html += '<span class="tip-wrap">Prompt: messages=' + escHtml(d.prompt_info.messages) + tipIcon('promptMsg') + '</span>';
@@ -929,12 +1028,146 @@ function renderRunDetail(d, el) {
 }
 
 // ============================================================
+// 渲染 — 会话浏览器 (功能 4/5/6)
+// ============================================================
+window.toggleConversationSection = function (el) {
+  el.classList.toggle('open');
+  var body = el.nextElementSibling;
+  if (body) {
+    var wasOpen = body.classList.contains('open');
+    body.classList.toggle('open');
+    if (!wasOpen && !conversationLoaded) {
+      loadSessionsList();
+    }
+  }
+};
+
+function loadSessionsList() {
+  var date = currentDate;
+  api('/api/sessions?date=' + (date || ''), function (sessions) {
+    var sel = $('#sessionSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">选择会话...</option>';
+    if (!sessions || sessions.length === 0) {
+      sel.innerHTML += '<option disabled>暂无会话数据</option>';
+      return;
+    }
+    sessions.forEach(function (s) {
+      var o = document.createElement('option');
+      o.value = s.session_id;
+      var label = (s.agent ? s.agent + '/' : '') + s.session_id.substring(0, 8);
+      label += ' (' + s.message_count + ' msgs';
+      if (s.model) label += ', ' + shortModel(s.model);
+      label += ')';
+      o.textContent = label;
+      sel.appendChild(o);
+    });
+    conversationLoaded = true;
+  });
+}
+
+window.loadConversationTree = function () {
+  var sel = $('#sessionSelect');
+  var tree = $('#conversationTree');
+  var info = $('#sessionInfo');
+  if (!sel || !tree) return;
+  var sid = sel.value;
+  if (!sid) {
+    tree.innerHTML = '';
+    if (info) info.textContent = '';
+    return;
+  }
+  tree.innerHTML = '<div class="loading"><span class="spinner"></span>加载会话...</div>';
+  api('/api/conversation_tree?session_id=' + encodeURIComponent(sid) + '&date=' + (currentDate || ''), function (messages) {
+    if (!messages || messages.length === 0) {
+      tree.innerHTML = '<div class="empty" style="padding:24px"><div class="icon">📭</div><p>暂无消息</p></div>';
+      return;
+    }
+    if (info) info.textContent = messages.length + ' 条消息';
+
+    // Build parent->children map for indentation
+    var parentMap = {};
+    var idSet = {};
+    messages.forEach(function (m) { idSet[m.id] = true; });
+
+    var html = '';
+    messages.forEach(function (m, idx) {
+      var role = m.role || '';
+      var mType = m.type || '';
+      var icon = '📄';
+      var cls = 'conv-message';
+      var indentCls = '';
+
+      if (mType === 'custom_message') {
+        icon = '🔄';
+        cls += ' system-event';
+      } else if (mType === 'model-snapshot') {
+        icon = '📸';
+        cls += ' model-snapshot';
+      } else if (role === 'user') {
+        icon = '👤';
+      } else if (role === 'assistant') {
+        icon = '🤖';
+      } else if (role === 'toolResult') {
+        icon = '🔧';
+        indentCls = ' conv-message-indent';
+      }
+
+      // Indentation based on parentId
+      if (m.parentId && idSet[m.parentId]) {
+        if (role !== 'toolResult') {
+          indentCls = ' conv-message-indent';
+        } else {
+          indentCls = ' conv-message-indent-2';
+        }
+      }
+
+      var time = fmtTime(m.timestamp);
+      var preview = m.preview || '';
+
+      html += '<div class="' + cls + indentCls + '" onclick="toggleConvMsg(' + idx + ')">';
+      html += '<div class="conv-message-icon">' + icon + '</div>';
+      html += '<div class="conv-message-body">';
+      html += '<span class="conv-message-time">' + escHtml(time) + '</span>';
+      html += '<span class="conv-message-preview">' + escHtml(preview) + '</span>';
+
+      // Meta info for assistant
+      if (role === 'assistant') {
+        var meta = '';
+        if (m.inference_ms) meta += '<span class="inference">' + fmtMs(m.inference_ms) + '</span> ';
+        if (m.tokens_per_sec) meta += '<span class="inference">' + m.tokens_per_sec + ' tok/s</span> ';
+        if (m.model) meta += escHtml(shortModel(m.model)) + ' ';
+        if (m.has_thinking) meta += '💭 ';
+        if (m.tool_count > 0) meta += '🔧×' + m.tool_count;
+        if (meta) html += '<div class="conv-message-meta">' + meta + '</div>';
+      }
+
+      // Full content (hidden by default)
+      if (m.full_text) {
+        html += '<div class="conv-message-full" id="conv-full-' + idx + '">' + escHtml(m.full_text) + '</div>';
+      }
+
+      html += '</div></div>';
+    });
+    tree.innerHTML = html;
+  });
+};
+
+window.toggleConvMsg = function (idx) {
+  var fullEl = document.getElementById('conv-full-' + idx);
+  if (!fullEl) return;
+  var parent = fullEl.closest('.conv-message');
+  if (parent) parent.classList.toggle('expanded');
+};
+
+// ============================================================
 // 页面状态
 // ============================================================
 function showEmpty() {
   $('#summaryCards').innerHTML = '';
   $('#summaryCards2').innerHTML = '';
   $('#summaryCards3').innerHTML = '';
+  $('#summaryCards4').innerHTML = '';
   $('#content').innerHTML = '<div class="empty"><div class="icon">📭</div><p>暂无诊断数据</p><p style="margin-top:8px;font-size:13px">等待 OpenClaw 生成日志后自动显示</p></div>';
 }
 
@@ -947,6 +1180,7 @@ function showLoading() {
 function loadData() {
   showLoading();
   renderLockedSections();
+  conversationLoaded = false;
   var d = currentDate;
   api('/api/dashboard?date=' + d + '&page=' + currentPage + '&per_page=' + perPage + '&mc_page=' + mcPage + '&mc_per_page=' + mcPerPage, function (data) {
     var skeleton = $('#skeletonCards');
@@ -1188,7 +1422,6 @@ window.runProbe = function (name) {
 };
 
 window.runAllProbes = function () {
-  // 串行执行所有探测
   probesList.forEach(function (p) {
     probeResults[p.name] = 'running';
   });
@@ -1224,6 +1457,7 @@ $('#dateSelect').addEventListener('change', function () {
   currentPage = 1;
   mcPage = 1;
   openRuns = {};
+  conversationLoaded = false;
   loadData();
 });
 
@@ -1231,7 +1465,6 @@ $('#autoRefreshSelect').addEventListener('change', function () {
   initAutoRefresh(parseInt(this.value) || 0);
 });
 
-// 启动: 先获取模式，再加载数据
 fetchMode(function () {
   fetchSystemInfo();
   fetchProbes();

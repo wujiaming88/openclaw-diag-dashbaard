@@ -1,4 +1,4 @@
-/* OpenClaw 诊断面板 v2.5.0 — 深色主题 */
+/* OpenClaw 诊断面板 v3.0.0 — 深色主题 */
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
   --bg:#1a1a2e;--bg2:#16213e;--bg3:#0f3460;
@@ -303,3 +303,50 @@ tr.clickable:hover td{background:var(--hover)}
 .not-recovered{color:var(--red);font-weight:600}
 .restart-reason{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2);font-size:12px}
 .restart-summary{margin-top:10px;font-size:13px;color:var(--text2);text-align:right;padding:4px 10px}
+
+/* === v3.0.0: 工具 details 样式 === */
+.tool-detail-tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;margin:1px 2px;font-family:"SF Mono",Monaco,Consolas,monospace}
+.tool-detail-tag.exit-ok{background:#1a3a2a;color:var(--green)}
+.tool-detail-tag.exit-err{background:#3a1a1a;color:var(--red);font-weight:600}
+.tool-detail-tag.duration{background:var(--bg3);color:var(--text2)}
+.tool-detail-tag.diff{background:#1a2a3a;color:var(--blue);cursor:pointer}
+.tool-detail-tag.fetch{background:#2a2a1a;color:var(--yellow)}
+
+/* === v3.0.0: Thinking 统计卡片 === */
+.card.thinking-card{border-color:var(--purple);border-width:1px}
+.card.thinking-card .value{color:var(--purple)}
+
+/* === v3.0.0: 会话浏览器 === */
+.conversation-controls{display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.conversation-controls select{padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px;min-width:300px;max-width:100%}
+.session-info{font-size:12px;color:var(--text2)}
+
+.conv-message{display:flex;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s}
+.conv-message:hover{background:var(--hover)}
+.conv-message.expanded{background:var(--bg3)}
+.conv-message-icon{font-size:16px;flex-shrink:0;width:24px;text-align:center}
+.conv-message-body{flex:1;min-width:0}
+.conv-message-time{font-size:11px;color:var(--text2);font-family:monospace;margin-right:8px}
+.conv-message-preview{font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conv-message-meta{font-size:11px;color:var(--text2);margin-top:2px}
+.conv-message-meta .inference{color:var(--accent);font-weight:500}
+.conv-message-full{display:none;margin-top:8px;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow-y:auto;color:var(--text2);font-family:"SF Mono",Monaco,Consolas,monospace;line-height:1.6}
+.conv-message.expanded .conv-message-full{display:block}
+.conv-message-indent{padding-left:30px}
+.conv-message-indent-2{padding-left:50px}
+
+/* 系统事件节点 */
+.conv-message.system-event{opacity:0.7;background:rgba(255,255,255,0.02)}
+.conv-message.system-event .conv-message-preview{color:var(--text2);font-style:italic}
+
+/* 模型快照节点 */
+.conv-message.model-snapshot{opacity:0.8;background:rgba(67,97,238,0.05)}
+.conv-message.model-snapshot .conv-message-preview{color:var(--accent)}
+
+/* 工具统计卡片 */
+.card.tool-card{border-color:var(--green);border-width:1px}
+.card.tool-card .value{color:var(--green)}
+.card.tool-card.error .value{color:var(--red)}
+
+/* Thinking 列 */
+.thinking-bar{display:inline-block;height:8px;border-radius:4px;background:var(--purple);opacity:0.7;vertical-align:middle;min-width:2px;max-width:60px}

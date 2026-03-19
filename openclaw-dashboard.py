@@ -42,7 +42,7 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "2.5.0"
+VERSION = "3.0.0"
 ADVANCED_MODE = False  # 全局模式标志，由 main() 设置
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 
@@ -1063,14 +1063,19 @@ def parse_session_files(sessions_dirs):
     同时收集纯文本回复（无 toolCall）的 usage，按 timestamp 索引
     同时收集模型调用记录列表 (每次 assistant 消息 = 一次调用)
     同时收集 toolResult 映射 (toolCallId -> result)
-    返回: (tool_data, text_reply_usage, model_calls, tool_results)
+    同时收集系统事件 (custom_message) 和模型快照 (model-snapshot)
+    同时收集所有消息用于对话树
+    返回: (tool_data, text_reply_usage, model_calls, tool_results, system_events, model_snapshots, all_messages)
     """
     tool_data = {}  # toolCallId -> {tool, arguments_raw, arguments_summary, arguments_full, usage}
     text_reply_usage = []  # [(timestamp_str, usage_dict)]
     model_calls = []  # 每次 assistant 消息的详细调用记录
-    tool_results = {}  # toolCallId -> {text, text_preview, isError}
+    tool_results = {}  # toolCallId -> {text, text_preview, isError, details}
+    system_events = []  # [{timestamp, event_type, content, details, session_id}]
+    model_snapshots = []  # [{timestamp, provider, modelApi, modelId, session_id}]
+    all_messages = []  # [{id, parentId, type, role, timestamp, preview, has_thinking, tool_count, session_id, ...}]
     if not sessions_dirs:
-        return tool_data, text_reply_usage, model_calls, tool_results
+        return tool_data, text_reply_usage, model_calls, tool_results, system_events, model_snapshots, all_messages
     files = []
     for d in sessions_dirs:
         pattern = os.path.join(d, "*.jsonl")
@@ -1107,7 +1112,64 @@ def parse_session_files(sessions_dirs):
                 obj = json.loads(line)
             except (json.JSONDecodeError, ValueError):
                 continue
-            if obj.get("type") != "message":
+
+            obj_type = obj.get("type", "")
+
+            # === 功能 6: model-snapshot ===
+            if obj_type == "custom" and obj.get("customType") == "model-snapshot":
+                snap_data = obj.get("data", {})
+                snap_ts = obj.get("timestamp", "")
+                snap_record = {
+                    "timestamp": snap_ts,
+                    "provider": snap_data.get("provider", ""),
+                    "modelApi": snap_data.get("modelApi", ""),
+                    "modelId": snap_data.get("modelId", ""),
+                    "session_id": internal_session_id,
+                }
+                model_snapshots.append(snap_record)
+                # Add to all_messages for conversation tree
+                all_messages.append({
+                    "id": obj.get("id", ""),
+                    "parentId": obj.get("parentId"),
+                    "type": "model-snapshot",
+                    "role": "system",
+                    "timestamp": snap_ts,
+                    "preview": "📸 模型切换: %s / %s" % (snap_data.get("provider", ""), snap_data.get("modelId", "")),
+                    "has_thinking": False,
+                    "tool_count": 0,
+                    "session_id": internal_session_id,
+                })
+                continue
+
+            # === 功能 5: custom_message 系统事件 ===
+            if obj_type == "custom_message":
+                cm_ts = obj.get("timestamp", "")
+                cm_custom_type = obj.get("customType", "")
+                cm_content = obj.get("content", "")
+                cm_details = obj.get("details", {})
+                system_events.append({
+                    "timestamp": cm_ts,
+                    "event_type": cm_custom_type,
+                    "content": cm_content[:500] if cm_content else "",
+                    "details": cm_details if isinstance(cm_details, dict) else {},
+                    "session_id": internal_session_id,
+                })
+                # Add to all_messages for conversation tree
+                all_messages.append({
+                    "id": obj.get("id", ""),
+                    "parentId": obj.get("parentId"),
+                    "type": "custom_message",
+                    "role": "system",
+                    "timestamp": cm_ts,
+                    "preview": "🔄 %s: %s" % (cm_custom_type, (cm_content[:80] if cm_content else "")),
+                    "has_thinking": False,
+                    "tool_count": 0,
+                    "session_id": internal_session_id,
+                    "event_type": cm_custom_type,
+                })
+                continue
+
+            if obj_type != "message":
                 continue
             msg = obj.get("message", {})
             if not isinstance(msg, dict):
@@ -1126,11 +1188,29 @@ def parse_session_files(sessions_dirs):
                                 result_text += item.get("text", "")
                     elif isinstance(result_content, str):
                         result_text = result_content
+                    # 功能 1: 提取 details 字段
+                    tr_details = msg.get("details", {})
+                    if not isinstance(tr_details, dict):
+                        tr_details = {}
                     tool_results[tc_id] = {
                         "text": result_text[:2000],
                         "text_preview": result_text[:200],
                         "isError": is_error,
+                        "details": tr_details,
+                        "toolName": msg.get("toolName", ""),
                     }
+                # Add to all_messages for conversation tree
+                all_messages.append({
+                    "id": obj.get("id", ""),
+                    "parentId": obj.get("parentId"),
+                    "type": "message",
+                    "role": "toolResult",
+                    "timestamp": obj.get("timestamp", ""),
+                    "preview": "🔧 %s: %s" % (msg.get("toolName", "tool"), result_text[:80] if tc_id else ""),
+                    "has_thinking": False,
+                    "tool_count": 0,
+                    "session_id": internal_session_id,
+                })
                 # 记录 toolResult 的顶层 timestamp 用于推理耗时计算
                 tr_ts = obj.get("timestamp", "")
                 if tr_ts:
@@ -1151,6 +1231,19 @@ def parse_session_files(sessions_dirs):
                     user_text = user_content
                 if user_text:
                     last_user_text = user_text
+                # Add to all_messages for conversation tree
+                all_messages.append({
+                    "id": obj.get("id", ""),
+                    "parentId": obj.get("parentId"),
+                    "type": "message",
+                    "role": "user",
+                    "timestamp": obj.get("timestamp", ""),
+                    "preview": user_text[:100] if user_text else "",
+                    "has_thinking": False,
+                    "tool_count": 0,
+                    "session_id": internal_session_id,
+                    "full_text": user_text[:3000] if user_text else "",
+                })
                 # 记录 user 消息的顶层 timestamp
                 u_ts = obj.get("timestamp", "")
                 if u_ts:
@@ -1213,11 +1306,16 @@ def parse_session_files(sessions_dirs):
                 }
                 # 简化 args_summary 用于调用记录
                 args_short = summary[:100] if summary else ""
+                # 功能 1: 从 tool_results 获取 details (如果已收集)
+                tc_details = {}
+                if tc_id in tool_results:
+                    tc_details = tool_results[tc_id].get("details", {})
                 tool_call_list.append({
                     "name": tc_name,
                     "id": tc_id,
                     "args_summary": args_short,
                     "args_full": args_full,
+                    "details": tc_details,
                 })
             # 没有 toolCall 的 assistant 消息 = 纯文本回复
             if not has_tool_call and usage and timestamp:
@@ -1255,6 +1353,8 @@ def parse_session_files(sessions_dirs):
                     if tx:
                         text_full += tx
             # 限制完整内容大小
+            thinking_chars_count = len(thinking_full)
+            text_chars_count = len(text_full)
             if len(thinking_full) > 5000:
                 thinking_full = thinking_full[:5000] + "... (%d chars)" % len(thinking_full)
             if len(text_full) > 3000:
@@ -1295,6 +1395,8 @@ def parse_session_files(sessions_dirs):
                 "api": api_name,
                 "stop_reason": stop_reason,
                 "prompt": prompt_data,
+                "thinking_chars": thinking_chars_count,
+                "thinking_ratio": round(thinking_chars_count / max(thinking_chars_count + text_chars_count, 1), 3),
                 "usage": {
                     "input": usage.get("input", 0) if isinstance(usage, dict) else 0,
                     "output": usage.get("output", 0) if isinstance(usage, dict) else 0,
@@ -1318,13 +1420,41 @@ def parse_session_files(sessions_dirs):
                 },
             }
             model_calls.append(call_record)
+            # Add to all_messages for conversation tree
+            assistant_preview = text_preview[:100] if text_preview else (thinking_preview[:100] if thinking_preview else "")
+            if not assistant_preview and tool_call_list:
+                assistant_preview = "🔧 " + ", ".join(tc["name"] for tc in tool_call_list[:3])
+            all_messages.append({
+                "id": obj.get("id", ""),
+                "parentId": obj.get("parentId"),
+                "type": "message",
+                "role": "assistant",
+                "timestamp": timestamp,
+                "preview": assistant_preview,
+                "has_thinking": has_thinking,
+                "tool_count": len(tool_call_list),
+                "session_id": internal_session_id,
+                "inference_ms": inference_ms,
+                "tokens_per_sec": tokens_per_sec,
+                "model": model,
+                "full_text": (text_full[:3000] if text_full else ""),
+            })
             # 更新 prev_top_timestamp 为当前 assistant 消息的时间
             if timestamp:
                 prev_top_timestamp = timestamp
 
     # Sort model_calls by timestamp descending
     model_calls.sort(key=lambda c: c.get("timestamp", ""), reverse=True)
-    return tool_data, text_reply_usage, model_calls, tool_results
+
+    # Second pass: backfill tool_call details from tool_results (since toolResult may come after assistant msg)
+    for mc in model_calls:
+        cs = mc.get("content_summary", {})
+        for tc in cs.get("tool_calls", []):
+            tc_id = tc.get("id", "")
+            if tc_id and tc_id in tool_results and not tc.get("details"):
+                tc["details"] = tool_results[tc_id].get("details", {})
+
+    return tool_data, text_reply_usage, model_calls, tool_results, system_events, model_snapshots, all_messages
 
 
 def summarize_tool_args(tool_name, args_raw):
@@ -1780,6 +1910,9 @@ class DataStore(object):
         self._text_reply_usage = None
         self._model_calls = None
         self._tool_results = None
+        self._system_events = None
+        self._model_snapshots = None
+        self._all_messages = None
         self._tool_data_loaded = False
         self._lock = threading.Lock()
 
@@ -1792,7 +1925,7 @@ class DataStore(object):
         if not self._tool_data_loaded:
             with self._lock:
                 if not self._tool_data_loaded:
-                    self._tool_data, self._text_reply_usage, self._model_calls, self._tool_results = parse_session_files(self.sessions_dirs)
+                    self._tool_data, self._text_reply_usage, self._model_calls, self._tool_results, self._system_events, self._model_snapshots, self._all_messages = parse_session_files(self.sessions_dirs)
                     self._tool_data_loaded = True
         return self._tool_data or {}
 
@@ -1841,16 +1974,192 @@ class DataStore(object):
         }
 
     def get_dates(self):
+        # Also include dates from session files (for standard mode without log files)
         pattern = os.path.join(self.log_dir, "openclaw-*.log")
         files = glob.glob(pattern)
-        dates = []
+        dates_set = set()
         for f in files:
             basename = os.path.basename(f)
             m = re.match(r"openclaw-(\d{4}-\d{2}-\d{2})\.log", basename)
             if m:
-                dates.append(m.group(1))
-        dates.sort(reverse=True)
+                dates_set.add(m.group(1))
+        # Add dates from model_calls
+        if self._tool_data_loaded and self._model_calls:
+            for mc in self._model_calls:
+                ts = mc.get("timestamp", "")[:10]
+                if ts and len(ts) == 10:
+                    dates_set.add(ts)
+        dates = sorted(dates_set, reverse=True)
         return dates
+
+    def get_tool_stats(self, date=None):
+        """功能 1: 返回工具统计 — 按工具名分组的调用次数、平均 durationMs、成功/失败率"""
+        self._get_tool_data()
+        tr = self._tool_results or {}
+        # Filter by date using model_calls timestamps to find relevant toolCallIds
+        mc_tool_ids_by_date = set()
+        all_mc = self._model_calls or []
+        for mc in all_mc:
+            mc_ts = mc.get("timestamp", "")[:10]
+            if date and mc_ts != date:
+                continue
+            cs = mc.get("content_summary", {})
+            for tc in cs.get("tool_calls", []):
+                tc_id = tc.get("id", "")
+                if tc_id:
+                    mc_tool_ids_by_date.add(tc_id)
+
+        # Also collect from tool_data
+        td = self._tool_data or {}
+        for tc_id, info in td.items():
+            tc_ts = info.get("timestamp", "")[:10]
+            if date and tc_ts != date:
+                continue
+            mc_tool_ids_by_date.add(tc_id)
+
+        # Build stats
+        tool_stats = {}  # name -> {count, total_ms, error_count, exit_codes}
+        total_duration_ms = 0
+        total_calls = 0
+        total_errors = 0
+        exit_code_dist = {}
+
+        for tc_id in mc_tool_ids_by_date:
+            result = tr.get(tc_id, {})
+            info = td.get(tc_id, {})
+            tool_name = result.get("toolName", "") or info.get("tool", "") or "unknown"
+            details = result.get("details", {})
+
+            if tool_name not in tool_stats:
+                tool_stats[tool_name] = {"count": 0, "total_ms": 0, "error_count": 0, "exit_codes": {}}
+
+            tool_stats[tool_name]["count"] += 1
+            total_calls += 1
+
+            # Duration from details
+            dur_ms = details.get("durationMs", 0) or details.get("tookMs", 0)
+            if isinstance(dur_ms, (int, float)) and dur_ms > 0:
+                tool_stats[tool_name]["total_ms"] += dur_ms
+                total_duration_ms += dur_ms
+
+            # Error detection
+            is_err = result.get("isError", False)
+            exit_code = details.get("exitCode")
+            if is_err or (exit_code is not None and exit_code != 0):
+                tool_stats[tool_name]["error_count"] += 1
+                total_errors += 1
+
+            # Exit code distribution for exec
+            if tool_name == "exec" and exit_code is not None:
+                ec_str = str(exit_code)
+                exit_code_dist[ec_str] = exit_code_dist.get(ec_str, 0) + 1
+                tool_stats[tool_name]["exit_codes"][ec_str] = tool_stats[tool_name]["exit_codes"].get(ec_str, 0) + 1
+
+        # Build response
+        by_tool = []
+        for name, stats in sorted(tool_stats.items(), key=lambda x: x[1]["count"], reverse=True):
+            avg_ms = round(stats["total_ms"] / stats["count"]) if stats["count"] > 0 else 0
+            error_rate = round(stats["error_count"] / stats["count"], 3) if stats["count"] > 0 else 0
+            by_tool.append({
+                "name": name,
+                "count": stats["count"],
+                "avg_ms": avg_ms,
+                "total_ms": round(stats["total_ms"]),
+                "error_count": stats["error_count"],
+                "error_rate": error_rate,
+                "exit_codes": stats.get("exit_codes", {}),
+            })
+
+        return {
+            "date": date or "",
+            "total_calls": total_calls,
+            "total_errors": total_errors,
+            "total_duration_ms": round(total_duration_ms),
+            "avg_duration_ms": round(total_duration_ms / total_calls) if total_calls > 0 else 0,
+            "exec_exit_code_dist": exit_code_dist,
+            "by_tool": by_tool,
+        }
+
+    def get_sessions_list(self, date=None):
+        """功能 4: 返回当日活跃 session 列表"""
+        self._get_tool_data()
+        all_mc = self._model_calls or []
+        all_msgs = self._all_messages or []
+
+        # Group by session_id
+        sessions_map = {}  # session_id -> {agent, message_count, first_ts, last_ts, model, total_tokens}
+        for m in all_msgs:
+            sid = m.get("session_id", "")
+            if not sid:
+                continue
+            ts = m.get("timestamp", "")
+            if date and ts[:10] != date:
+                continue
+            if sid not in sessions_map:
+                sessions_map[sid] = {
+                    "session_id": sid,
+                    "message_count": 0,
+                    "first_ts": ts,
+                    "last_ts": ts,
+                    "model": "",
+                    "total_tokens": 0,
+                }
+            sessions_map[sid]["message_count"] += 1
+            if ts < sessions_map[sid]["first_ts"]:
+                sessions_map[sid]["first_ts"] = ts
+            if ts > sessions_map[sid]["last_ts"]:
+                sessions_map[sid]["last_ts"] = ts
+
+        # Enrich with model call data
+        for mc in all_mc:
+            sid = mc.get("session_id", "")
+            if not sid or sid not in sessions_map:
+                continue
+            ts = mc.get("timestamp", "")[:10]
+            if date and ts != date:
+                continue
+            if not sessions_map[sid]["model"]:
+                sessions_map[sid]["model"] = mc.get("model", "")
+            u = mc.get("usage", {})
+            sessions_map[sid]["total_tokens"] += u.get("totalTokens", 0) or (u.get("input", 0) + u.get("output", 0))
+
+        # Try to extract agent from session dir path
+        # sessions_dirs pattern: ~/.openclaw/agents/{agent}/sessions
+        agent_map = {}
+        for d in self.sessions_dirs:
+            parts = d.replace("\\", "/").split("/")
+            for i, p in enumerate(parts):
+                if p == "agents" and i + 1 < len(parts):
+                    agent_name = parts[i + 1]
+                    # find session files in this dir
+                    for f in glob.glob(os.path.join(d, "*.jsonl")):
+                        fname = os.path.basename(f).split(".")[0].split("-topic-")[0]
+                        agent_map[fname] = agent_name
+
+        sessions_list = []
+        for sid, info in sessions_map.items():
+            info["agent"] = agent_map.get(sid, "")
+            sessions_list.append(info)
+
+        sessions_list.sort(key=lambda s: s.get("last_ts", ""), reverse=True)
+        return sessions_list
+
+    def get_conversation_tree(self, session_id=None, date=None):
+        """功能 4: 返回消息树 — 按 parentId 构建"""
+        self._get_tool_data()
+        all_msgs = self._all_messages or []
+
+        filtered = []
+        for m in all_msgs:
+            if session_id and m.get("session_id", "") != session_id:
+                continue
+            if date and m.get("timestamp", "")[:10] != date:
+                continue
+            filtered.append(m)
+
+        # Sort by timestamp
+        filtered.sort(key=lambda m: m.get("timestamp", ""))
+        return filtered
 
     def _load_runs(self, date):
         filepath = os.path.join(self.log_dir, "openclaw-%s.log" % date)
@@ -1965,6 +2274,76 @@ class DataStore(object):
             "last_restart": last_restart,
             "total_downtime_sec": total_downtime_sec,
         }
+
+        # === 功能 1: 工具统计 ===
+        tool_stats = self.get_tool_stats(date)
+        result["tool_call_count"] = tool_stats["total_calls"]
+        result["tool_error_count"] = tool_stats["total_errors"]
+        result["tool_avg_duration_ms"] = tool_stats["avg_duration_ms"]
+        # top 5 tools
+        top_tools = []
+        for t in tool_stats["by_tool"][:5]:
+            top_tools.append({
+                "name": t["name"],
+                "count": t["count"],
+                "avg_ms": t["avg_ms"],
+                "error_count": t["error_count"],
+            })
+        result["top_tools"] = top_tools
+
+        # === 功能 2: Thinking 深度统计 ===
+        thinking_total_chars = 0
+        thinking_calls_count = 0
+        thinking_ratio_sum = 0
+        for mc in all_mc:
+            mc_ts = mc.get("timestamp", "")[:10]
+            if mc_ts != date:
+                continue
+            tc = mc.get("thinking_chars", 0)
+            if tc > 0:
+                thinking_total_chars += tc
+                thinking_calls_count += 1
+                thinking_ratio_sum += mc.get("thinking_ratio", 0)
+        result["thinking_total_chars"] = thinking_total_chars
+        result["thinking_avg_chars"] = round(thinking_total_chars / thinking_calls_count) if thinking_calls_count > 0 else 0
+        result["thinking_calls_count"] = thinking_calls_count
+        result["thinking_avg_ratio"] = round(thinking_ratio_sum / thinking_calls_count, 3) if thinking_calls_count > 0 else 0
+
+        # === 功能 5: 系统事件统计 ===
+        sys_events = self._system_events or []
+        yield_count = 0
+        system_event_count = 0
+        for ev in sys_events:
+            ev_ts = ev.get("timestamp", "")[:10]
+            if ev_ts != date:
+                continue
+            system_event_count += 1
+            if ev.get("event_type") == "openclaw.sessions_yield":
+                yield_count += 1
+        result["yield_count"] = yield_count
+        result["system_event_count"] = system_event_count
+
+        # === 功能 6: 模型使用列表 ===
+        snapshots = self._model_snapshots or []
+        models_map = {}  # (model, provider) -> count
+        for snap in snapshots:
+            snap_ts = snap.get("timestamp", "")[:10]
+            if snap_ts != date:
+                continue
+            key = (snap.get("modelId", ""), snap.get("provider", ""))
+            models_map[key] = models_map.get(key, 0) + 1
+        # Also count from model_calls
+        for mc in all_mc:
+            mc_ts = mc.get("timestamp", "")[:10]
+            if mc_ts != date:
+                continue
+            key = (mc.get("model", ""), mc.get("provider", ""))
+            if key[0]:
+                models_map[key] = models_map.get(key, 0) + 1
+        models_used = []
+        for (model, provider), count in sorted(models_map.items(), key=lambda x: x[1], reverse=True):
+            models_used.append({"model": model, "provider": provider, "call_count": count})
+        result["models_used"] = models_used
 
         if not advanced_mode:
             # 标准模式不需要 Run 级别统计
@@ -2995,6 +3374,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     pass
                 per_page = max(1, min(per_page, 200))
                 result = self.data_store.get_model_calls(date, page, per_page)
+                self._send_json(result)
+            elif path == "/api/tool_stats":
+                date = params.get("date", [""])[0]
+                if not date:
+                    dates = self.data_store.get_dates()
+                    date = dates[0] if dates else ""
+                result = self.data_store.get_tool_stats(date)
+                self._send_json(result)
+            elif path == "/api/sessions":
+                date = params.get("date", [""])[0]
+                result = self.data_store.get_sessions_list(date)
+                self._send_json(result)
+            elif path == "/api/conversation_tree":
+                session_id = params.get("session_id", [""])[0]
+                date = params.get("date", [""])[0]
+                result = self.data_store.get_conversation_tree(session_id, date)
                 self._send_json(result)
             elif path == "/api/debug/sessions":
                 # 诊断端点：检查 session 文件解析情况

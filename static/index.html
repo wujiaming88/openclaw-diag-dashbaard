@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OpenClaw 诊断面板</title>
 <link rel="preconnect" href="/">
-<link rel="preload" href="/static/app.js?v=16" as="script">
+<link rel="preload" href="/static/app.js?v=30" as="script">
 <link rel="preload" href="/api/dates" as="fetch" crossorigin>
 <style>
 /* 关键内联 CSS — 首屏骨架样式，避免 FOUC */
@@ -26,7 +26,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .loading-skeleton{height:80px;background:linear-gradient(90deg,var(--card) 25%,var(--bg2) 50%,var(--card) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 </style>
-<link rel="stylesheet" href="/static/style.css?v=16">
+<link rel="stylesheet" href="/static/style.css?v=30">
 </head>
 <body>
 <div class="container">
@@ -62,6 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
   <div id="summaryCards" class="cards"></div>
   <div id="summaryCards2" class="cards"></div>
   <div id="summaryCards3" class="cards"></div>
+  <div id="summaryCards4" class="cards"></div>
 
   <!-- 探测控制面板 -->
   <div id="probesSection" class="section collapsible">
@@ -103,6 +104,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
     <div class="section-body open" id="modelCallsBody"></div>
   </div>
 
+  <!-- 会话浏览器 (默认折叠) -->
+  <div id="conversationSection" class="section collapsible" style="display:none">
+    <div class="section-header" onclick="toggleConversationSection(this)">
+      <h2>💬 会话浏览器</h2>
+      <span class="toggle-icon">▼</span>
+    </div>
+    <div class="section-body" id="conversationBody">
+      <div id="conversationControls" class="conversation-controls">
+        <select id="sessionSelect" onchange="loadConversationTree()">
+          <option value="">选择会话...</option>
+        </select>
+        <span id="sessionInfo" class="session-info"></span>
+      </div>
+      <div id="conversationTree"></div>
+    </div>
+  </div>
+
   <!-- 锁定提示：Run 详情 (标准模式显示) -->
   <div id="lockedRunsSection" class="section locked-section" style="display:none">
     <div class="locked-content">
@@ -138,6 +156,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
   </div>
 
 </div>
-<script defer src="/static/app.js?v=16"></script>
+<script defer src="/static/app.js?v=30"></script>
 </body>
 </html>
