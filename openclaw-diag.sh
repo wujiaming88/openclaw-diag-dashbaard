@@ -219,6 +219,11 @@ inference_usage = {}  # toolCallId -> {input, output, cacheRead, cacheWrite, tot
 # 没有 toolCall 的推理(纯文本回复)按时间戳索引
 text_reply_usage = []  # [(timestamp, usage)]
 
+# 推理事件序列 (session-based): session_key -> [event_dict]
+session_infer_events = defaultdict(list)
+# 所有推理事件(用于时间窗口匹配)
+all_infer_events = []
+
 def extract_tool_summary(name, args):
     """从工具参数中提取可读摘要"""
     cmd = args.get("command", "")
@@ -288,10 +293,30 @@ def extract_tool_summary(name, args):
     return "  ".join(filter(None, parts))
 
 if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
-    for sf in glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl")):
+    # 扫描所有 agent 的 sessions 目录
+    session_dirs = glob.glob(os.path.join(os.path.dirname(SESSIONS_DIR), "*/sessions"))
+    if not session_dirs:
+        session_dirs = [SESSIONS_DIR]
+    all_session_files = []
+    for sd in session_dirs:
+        all_session_files.extend(glob.glob(os.path.join(sd, "*.jsonl")))
+    if not all_session_files:
+        all_session_files = glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl"))
+    for sf in all_session_files:
         try:
+            # 从文件路径推导 session_key: agents/{agent}/sessions/{id}.jsonl -> {agent}:{id}
+            sf_parts = sf.replace("\\", "/").split("/")
+            sf_session_id = os.path.splitext(os.path.basename(sf))[0]
+            sf_agent = ""
+            for pi, p in enumerate(sf_parts):
+                if p == "agents" and pi + 1 < len(sf_parts):
+                    sf_agent = sf_parts[pi + 1]
+                    break
+            sf_session_key = f"{sf_agent}:{sf_session_id}" if sf_agent else sf_session_id
+
             # 每个 session 文件独立跟踪 prev_top_timestamp
             prev_top_timestamp = ""
+            infer_round = 0
             with open(sf) as f:
                 for line in f:
                     try:
@@ -407,6 +432,23 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                             else:
                                 text_reply_usage.append((timestamp, usage_record))
 
+                        # 推理事件提取: assistant 且 prev_top_timestamp 有值
+                        if prev_top_timestamp and timestamp and inference_ms > 0:
+                            infer_round += 1
+                            infer_evt = {
+                                "session_key": sf_session_key,
+                                "send_ts": prev_top_timestamp,
+                                "recv_ts": timestamp,
+                                "inference_ms": inference_ms,
+                                "round": infer_round,
+                                "input_tokens": usage.get("input", 0) if isinstance(usage, dict) else 0,
+                                "output_tokens": usage.get("output", 0) if isinstance(usage, dict) else 0,
+                                "cache_read": usage.get("cacheRead", 0) if isinstance(usage, dict) else 0,
+                                "tokens_per_sec": tokens_per_sec,
+                            }
+                            session_infer_events[sf_session_key].append(infer_evt)
+                            all_infer_events.append(infer_evt)
+
                     except:
                         pass
         except:
@@ -498,7 +540,7 @@ errors = [(t, msg) for t, level, msg in events if level == "ERROR"]
 
 def parse_time(t):
     try:
-        return datetime.fromisoformat(t.replace("+00:00", ""))
+        return datetime.fromisoformat(t.replace("+00:00", "").replace("Z", ""))
     except:
         return None
 
@@ -818,13 +860,62 @@ for i, (run_id, r) in enumerate(sorted_runs):
             break
 
     # 收集所有 model send/recv 事件（支持多轮推理）
-    model_send_count = 0
-    for t, msg in r["events"]:
-        if "run agent start" in msg:
-            model_send_count += 1
-            timeline.append((t, f"[MODEL-SEND] 模型推理开始 (第{model_send_count}次)"))
-        elif "run agent end" in msg:
-            timeline.append((t, f"[MODEL-RECV] 模型推理完成 (第{model_send_count}次)"))
+    # 优先使用 session 推理事件，日志兜底
+    matched_session_events = []
+    session_key = r.get("session_key", "")
+
+    # 策略1: 通过 session_key 精确匹配
+    if session_key and session_key in session_infer_events:
+        matched_session_events = session_infer_events[session_key]
+
+    # 策略2: 时间窗口匹配
+    if not matched_session_events and r["start"] and r["end"]:
+        run_start_dt = parse_time(r["start"])
+        run_end_dt = parse_time(r["end"])
+        if run_start_dt and run_end_dt:
+            for evt in all_infer_events:
+                try:
+                    evt_send_dt = parse_time(evt["send_ts"])
+                    evt_recv_dt = parse_time(evt["recv_ts"])
+                    if evt_send_dt and evt_recv_dt:
+                        if evt_send_dt >= run_start_dt and evt_recv_dt <= run_end_dt:
+                            matched_session_events.append(evt)
+                except:
+                    pass
+
+    if matched_session_events:
+        # 使用 session 推理事件
+        for idx_evt, evt in enumerate(matched_session_events, 1):
+            send_ts = evt["send_ts"]
+            recv_ts = evt["recv_ts"]
+            inf_ms = evt["inference_ms"]
+            in_tok = evt["input_tokens"]
+            out_tok = evt["output_tokens"]
+            cache_read = evt.get("cache_read", 0)
+            tps = evt["tokens_per_sec"]
+            timeline.append((send_ts, f"[MODEL-SEND] 模型推理开始 (第{idx_evt}次) ← session"))
+            recv_detail = f"[MODEL-RECV] 模型推理完成 (第{idx_evt}次) 耗时 {fmt_duration(inf_ms)}"
+            if in_tok or out_tok:
+                tok_parts = [f"in={in_tok}", f"out={out_tok}"]
+                if cache_read:
+                    tok_parts.append(f"cache={cache_read}")
+                recv_detail += f" | {' '.join(tok_parts)}"
+            if tps > 0:
+                recv_detail += f" ({tps:.1f} tok/s)"
+            recv_detail += " ← session"
+            timeline.append((recv_ts, recv_detail))
+        # 标记已使用 session 数据，避免日志重复
+        used_session_model_events = True
+    else:
+        # 日志兜底
+        used_session_model_events = False
+        model_send_count = 0
+        for t, msg in r["events"]:
+            if "run agent start" in msg:
+                model_send_count += 1
+                timeline.append((t, f"[MODEL-SEND] 模型推理开始 (第{model_send_count}次) ← log"))
+            elif "run agent end" in msg:
+                timeline.append((t, f"[MODEL-RECV] 模型推理完成 (第{model_send_count}次) ← log"))
 
     for tool in r["tools"]:
         tid = tool["id"]
