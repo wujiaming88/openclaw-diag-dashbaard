@@ -817,8 +817,14 @@ for i, (run_id, r) in enumerate(sorted_runs):
             timeline.append((t, f"[PROMPT]     构建提示词{detail}"))
             break
 
-    if r["first_token"]:
-        timeline.append((r["first_token"], "[MODEL-SEND] 请求已发送给模型, 等待推理"))
+    # 收集所有 model send/recv 事件（支持多轮推理）
+    model_send_count = 0
+    for t, msg in r["events"]:
+        if "run agent start" in msg:
+            model_send_count += 1
+            timeline.append((t, f"[MODEL-SEND] 模型推理开始 (第{model_send_count}次)"))
+        elif "run agent end" in msg:
+            timeline.append((t, f"[MODEL-RECV] 模型推理完成 (第{model_send_count}次)"))
 
     for tool in r["tools"]:
         tid = tool["id"]
