@@ -31,6 +31,7 @@ import signal
 import socket
 import subprocess
 import threading
+import time
 import traceback
 from collections import OrderedDict
 from datetime import datetime
@@ -41,9 +42,163 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 ADVANCED_MODE = False  # 全局模式标志，由 main() 设置
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
+
+# ============================================================
+# 探测命令定义
+# ============================================================
+
+PROBES = {
+    "health": {
+        "cmd": ["openclaw", "health", "--json"],
+        "timeout": 15,
+        "format": "json",
+        "label": "健康检查",
+        "description": "频道状态、Agent列表、Session统计",
+        "icon": "🏥",
+    },
+    "gateway_status": {
+        "cmd": ["openclaw", "gateway", "status", "--json"],
+        "timeout": 15,
+        "format": "json",
+        "label": "Gateway 状态",
+        "description": "服务状态、PID、端口、RPC探测",
+        "icon": "🌐",
+    },
+    "config_validate": {
+        "cmd": ["openclaw", "config", "validate"],
+        "timeout": 5,
+        "format": "text",
+        "label": "配置校验",
+        "description": "校验配置文件语法和结构",
+        "icon": "✅",
+    },
+    "doctor": {
+        "cmd": ["openclaw", "doctor", "--non-interactive"],
+        "timeout": 30,
+        "format": "text",
+        "label": "全面诊断",
+        "description": "配置审计、安全检查、技能状态、会话锁",
+        "icon": "🔬",
+    },
+    "update_status": {
+        "cmd": ["openclaw", "update", "status"],
+        "timeout": 10,
+        "format": "text",
+        "label": "版本状态",
+        "description": "当前版本、更新通道、可用更新",
+        "icon": "📦",
+    },
+    "models_status": {
+        "cmd": ["openclaw", "models", "status"],
+        "timeout": 10,
+        "format": "text",
+        "label": "模型状态",
+        "description": "已配置模型、默认模型、fallback 列表",
+        "icon": "🤖",
+    },
+}
+
+
+def strip_ansi(text):
+    """去除 ANSI 转义码"""
+    return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+
+
+def _utcnow_iso():
+    """返回 UTC 当前时间的 ISO 格式字符串"""
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def extract_json_block(text):
+    """从可能混有非 JSON 行的文本中提取第一个完整 JSON 对象"""
+    start = text.find('{')
+    if start == -1:
+        return text
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+        if depth == 0:
+            return text[start:i + 1]
+    return text[start:]
+
+
+def run_probe(probe_name):
+    """执行探测命令，返回结果字典"""
+    probe = PROBES.get(probe_name)
+    if not probe:
+        return {"ok": False, "error": "未知探测项: %s" % probe_name, "probe": probe_name}
+
+    t0 = time.time()
+    try:
+        result = subprocess.run(
+            probe["cmd"],
+            capture_output=True,
+            text=True,
+            timeout=probe["timeout"],
+        )
+        duration_ms = int((time.time() - t0) * 1000)
+
+        # 过滤 stderr 中的 [plugins] 行
+        stdout = result.stdout
+        stderr = "\n".join(
+            line for line in result.stderr.splitlines()
+            if not line.strip().startswith("[plugins]")
+        ).strip()
+
+        output = {}
+        if probe["format"] == "json":
+            json_str = extract_json_block(stdout)
+            try:
+                output["data"] = json.loads(json_str)
+            except (json.JSONDecodeError, ValueError):
+                output["raw"] = strip_ansi(stdout)
+        else:
+            output["raw"] = strip_ansi(stdout)
+
+        return {
+            "ok": result.returncode == 0,
+            "probe": probe_name,
+            "label": probe["label"],
+            "description": probe["description"],
+            "icon": probe.get("icon", ""),
+            "format": probe["format"],
+            "exit_code": result.returncode,
+            "duration_ms": duration_ms,
+            "output": output,
+            "stderr": stderr if stderr else None,
+            "timestamp": _utcnow_iso(),
+        }
+    except subprocess.TimeoutExpired:
+        duration_ms = int((time.time() - t0) * 1000)
+        return {
+            "ok": False,
+            "probe": probe_name,
+            "label": probe["label"],
+            "description": probe["description"],
+            "icon": probe.get("icon", ""),
+            "error": "命令超时 (%ds)" % probe["timeout"],
+            "duration_ms": duration_ms,
+            "timestamp": _utcnow_iso(),
+        }
+    except Exception as e:
+        duration_ms = int((time.time() - t0) * 1000)
+        return {
+            "ok": False,
+            "probe": probe_name,
+            "label": probe["label"],
+            "description": probe["description"],
+            "icon": probe.get("icon", ""),
+            "error": str(e),
+            "duration_ms": duration_ms,
+            "timestamp": _utcnow_iso(),
+        }
+
 
 # ============================================================
 # 路径自动检测
@@ -2536,6 +2691,68 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """支持 HEAD 请求（浏览器预检、缓存验证）"""
         self.do_GET()
 
+    def do_OPTIONS(self):
+        """支持 CORS 预检请求"""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_POST(self):
+        """处理 POST 请求 — 探测命令"""
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+
+        if not self._check_token(params):
+            self._send_json({"error": "Unauthorized"}, 403)
+            return
+
+        try:
+            if path == "/api/probe/all":
+                # 串行执行所有探测
+                results = {}
+                total_ms = 0
+                passed = 0
+                failed = 0
+                for name in PROBES:
+                    r = run_probe(name)
+                    results[name] = r
+                    total_ms += r.get("duration_ms", 0)
+                    if r.get("ok"):
+                        passed += 1
+                    else:
+                        failed += 1
+                self._send_json({
+                    "ok": failed == 0,
+                    "probes": results,
+                    "summary": {
+                        "total": len(PROBES),
+                        "passed": passed,
+                        "failed": failed,
+                        "total_duration_ms": total_ms,
+                    },
+                    "timestamp": _utcnow_iso(),
+                })
+            elif path.startswith("/api/probe/"):
+                probe_name = path[len("/api/probe/"):]
+                if probe_name not in PROBES:
+                    self._send_json({"error": "未知探测项: %s" % probe_name, "available": list(PROBES.keys())}, 404)
+                    return
+                result = run_probe(probe_name)
+                self._send_json(result)
+            else:
+                self._send_json({"error": "not found"}, 404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                self._send_json({"error": str(e)}, 500)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -2579,6 +2796,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/system_info":
                 info = get_system_info(self.data_store, self.config_path, self.config_data)
                 self._send_json(info)
+            elif path == "/api/probes":
+                # 列出所有可用探测项
+                probes_list = []
+                for name, probe in PROBES.items():
+                    probes_list.append({
+                        "name": name,
+                        "label": probe["label"],
+                        "description": probe["description"],
+                        "icon": probe.get("icon", ""),
+                        "format": probe["format"],
+                        "timeout": probe["timeout"],
+                    })
+                self._send_json({"probes": probes_list})
             elif path == "/api/dashboard":
                 # 批量接口: 一次返回 summary + events + runs，减少前端请求数
                 date = params.get("date", [""])[0]
@@ -2607,6 +2837,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "date": date,
                     "summary": self.data_store.get_summary(date, self.advanced_mode),
                     "restarts": self.data_store.get_restarts(date),
+                    "probes_available": list(PROBES.keys()),
                 }
                 # 高级模式额外返回 events, runs, errors
                 if self.advanced_mode:
@@ -2804,9 +3035,159 @@ class DashboardHandler(BaseHTTPRequestHandler):
 # 主程序
 # ============================================================
 
+def run_cli_mode(args):
+    """CLI 模式：不启动 web 服务器，直接在终端执行探测并输出结果"""
+    json_output = getattr(args, 'json', False)
+
+    # 确定要执行哪些探测
+    probe_name = getattr(args, 'probe', None)
+    if probe_name and probe_name != "all":
+        probe_names = [probe_name]
+    else:
+        probe_names = list(PROBES.keys())
+
+    if json_output:
+        # JSON 输出模式
+        results = {}
+        total_ms = 0
+        passed = 0
+        failed = 0
+        for name in probe_names:
+            r = run_probe(name)
+            results[name] = r
+            total_ms += r.get("duration_ms", 0)
+            if r.get("ok"):
+                passed += 1
+            else:
+                failed += 1
+        output = {
+            "version": VERSION,
+            "timestamp": _utcnow_iso(),
+            "probes": results,
+            "summary": {
+                "total": len(probe_names),
+                "passed": passed,
+                "failed": failed,
+                "total_duration_ms": total_ms,
+            },
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        sys.exit(0 if failed == 0 else 1)
+    else:
+        # 人类可读输出
+        print("")
+        print("\033[1m🦞 OpenClaw 诊断工具 v%s\033[0m" % VERSION)
+        print("━" * 40)
+        print("")
+
+        total_ms = 0
+        passed = 0
+        failed = 0
+
+        for name in probe_names:
+            probe = PROBES[name]
+            sys.stdout.write("%s %s ... " % (probe.get("icon", ""), probe["label"]))
+            sys.stdout.flush()
+            r = run_probe(name)
+            dur_s = r.get("duration_ms", 0) / 1000.0
+            total_ms += r.get("duration_ms", 0)
+
+            if r.get("ok"):
+                passed += 1
+                print("\033[32m✅ (%.1fs)\033[0m" % dur_s)
+            else:
+                failed += 1
+                err = r.get("error", "")
+                print("\033[31m❌ (%.1fs)\033[0m" % dur_s)
+                if err:
+                    print("  \033[31m错误: %s\033[0m" % err)
+
+            # 显示输出内容
+            output = r.get("output", {})
+            if output.get("data"):
+                data = output["data"]
+                # 为 JSON 格式提取关键信息
+                if name == "health":
+                    _print_health_summary(data)
+                elif name == "gateway_status":
+                    _print_gateway_summary(data)
+                else:
+                    print(json.dumps(data, ensure_ascii=False, indent=2))
+            elif output.get("raw"):
+                raw = output["raw"].strip()
+                if raw:
+                    for line in raw.split("\n"):
+                        print("  %s" % line)
+
+            if r.get("stderr"):
+                print("  \033[33m[stderr] %s\033[0m" % r["stderr"][:200])
+
+            print("")
+
+        # 总结
+        print("━" * 40)
+        total_s = total_ms / 1000.0
+        status_str = "\033[32m全部通过\033[0m" if failed == 0 else "\033[31m%d 项失败\033[0m" % failed
+        print("总耗时: %.1fs | %d 项探测 | %s" % (total_s, len(probe_names), status_str))
+        print("")
+        sys.exit(0 if failed == 0 else 1)
+
+
+def _print_health_summary(data):
+    """为 health 探测提取关键信息的可读输出"""
+    if not isinstance(data, dict):
+        print("  %s" % str(data)[:300])
+        return
+    channels = data.get("channels", {})
+    if isinstance(channels, dict):
+        for ch_name, ch_info in channels.items():
+            if isinstance(ch_info, dict):
+                accounts = ch_info.get("accounts", [])
+                status = ch_info.get("status", "unknown")
+                print("  频道: %s (%d accounts, %s)" % (ch_name, len(accounts) if isinstance(accounts, list) else 0, status))
+            else:
+                print("  频道: %s" % ch_name)
+    agents = data.get("agents", [])
+    if isinstance(agents, list):
+        agent_names = []
+        for a in agents:
+            if isinstance(a, dict):
+                agent_names.append(a.get("id", a.get("name", "?")))
+            elif isinstance(a, str):
+                agent_names.append(a)
+        print("  Agent: %d (%s)" % (len(agent_names), ", ".join(agent_names[:10])))
+    sessions = data.get("sessions", {})
+    if isinstance(sessions, dict):
+        parts = []
+        for sid, sinfo in list(sessions.items())[:5]:
+            if isinstance(sinfo, dict):
+                count = sinfo.get("count", sinfo.get("total", "?"))
+                parts.append("%s: %s" % (sid, count))
+            else:
+                parts.append("%s: %s" % (sid, sinfo))
+        if parts:
+            print("  Session: %s" % ", ".join(parts))
+
+
+def _print_gateway_summary(data):
+    """为 gateway_status 探测提取关键信息的可读输出"""
+    if not isinstance(data, dict):
+        print("  %s" % str(data)[:300])
+        return
+    pid = data.get("pid", data.get("mainPID", "?"))
+    port = data.get("port", "?")
+    status = data.get("status", data.get("state", "?"))
+    rpc = data.get("rpc", {})
+    rpc_status = rpc.get("status", "?") if isinstance(rpc, dict) else "?"
+    print("  PID: %s | 端口: %s | 状态: %s | RPC: %s" % (pid, port, status, rpc_status))
+    uptime = data.get("uptime", "")
+    if uptime:
+        print("  运行时间: %s" % uptime)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="OpenClaw 诊断面板 v%s — 零依赖 Web Dashboard" % VERSION
+        description="OpenClaw 诊断面板 v%s — 零依赖 Web Dashboard + CLI 探测工具" % VERSION
     )
     parser.add_argument("--port", type=int, default=9090, help="监听端口 (默认 9090)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="绑定地址 (默认 0.0.0.0)")
@@ -2815,7 +3196,18 @@ def main():
     parser.add_argument("--token", type=str, default="", help="访问令牌 (可选)")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--advanced", action="store_true", help="启用高级诊断模式 (需要 debug 日志)")
+    parser.add_argument("--cli", action="store_true", help="CLI 模式（不启动 web 服务）")
+    parser.add_argument("--probe", choices=list(PROBES.keys()) + ["all"], default=None,
+                        help="CLI: 执行指定探测项 (默认 all)")
+    parser.add_argument("--json", action="store_true", help="CLI: JSON 格式输出")
     args = parser.parse_args()
+
+    # CLI 模式
+    if args.cli:
+        if args.probe is None:
+            args.probe = "all"
+        run_cli_mode(args)
+        return
 
     # 设置全局模式标志
     global ADVANCED_MODE
