@@ -679,10 +679,24 @@ for run_id, r in runs.items():
         if s and e:
             run_durations.append((e - s).total_seconds() * 1000)
 
-    # 精确计算推理总时间
-    segments, total_infer, total_tool = calc_inference_segments(r)
-    if total_infer > 0:
-        model_times.append(total_infer)
+    # 从 session 数据计算推理总时间
+    session_key_g = r.get("session_key", "")
+    matched_g = session_infer_events.get(session_key_g, [])
+    if not matched_g and r["start"] and r["end"]:
+        run_start_g = parse_time(r["start"])
+        run_end_g = parse_time(r["end"])
+        if run_start_g and run_end_g:
+            for evt_g in all_infer_events:
+                try:
+                    evt_s_g = parse_time(evt_g["send_ts"])
+                    evt_r_g = parse_time(evt_g["recv_ts"])
+                    if evt_s_g and evt_r_g and evt_s_g >= run_start_g and evt_r_g <= run_end_g:
+                        matched_g.append(evt_g)
+                except:
+                    pass
+    total_infer_g = sum(e["inference_ms"] for e in matched_g)
+    if total_infer_g > 0:
+        model_times.append(total_infer_g)
 
     for tool in r["tools"]:
         if tool["start"] and tool["end"]:
@@ -869,7 +883,7 @@ for i, (run_id, r) in enumerate(sorted_runs):
             break
 
     # 收集所有 model send/recv 事件（支持多轮推理）
-    # 优先使用 session 推理事件，日志兜底
+    # 从 session 获取推理事件
     matched_session_events = []
     session_key = r.get("session_key", "")
 
@@ -1000,72 +1014,33 @@ for i, (run_id, r) in enumerate(sorted_runs):
         for extra_line in lines[1:]:
             print(f"  {extra_line}")
 
-    # ========== Run 汇总 ==========
+    # ========== Run 汇总 (纯 session 数据) ==========
     print()
-    segments, total_infer, total_tool = calc_inference_segments(r)
 
-    # 收集本 run 所有推理的 token 用量
+    # 从 matched_session_events 计算推理/token 汇总
     run_total_input = 0
     run_total_output = 0
     run_total_cache_read = 0
     run_total_cache_write = 0
     run_total_tokens = 0
-    run_inference_count = 0
-    seen_usage_ids = set()  # 避免同一条 usage 被多个 toolCall 重复计数
+    run_inference_count = len(matched_session_events)
 
-    # 从 calc_inference_segments 返回的 segments 构建 per_inference
-    per_inference = []  # [(label, ms, merged_usage_or_None)]
+    total_infer = 0
+    for evt_s in matched_session_events:
+        total_infer += evt_s["inference_ms"]
+        run_total_input += evt_s["input_tokens"]
+        run_total_output += evt_s["output_tokens"]
+        run_total_cache_read += evt_s.get("cache_read", 0)
+        run_total_cache_write += evt_s.get("cache_write", 0)
 
-    for label, ms, tool_indices in segments:
-        merged_usage = None
-        merged_output = 0
-        merged_input = 0
-        merged_cache_read = 0
-        merged_cache_write = 0
-        found_any = False
-
-        for ti in tool_indices:
-            if ti < len(r["tools"]):
-                tool = r["tools"][ti]
-                usage_rec = inference_usage.get(tool["id"])
-                if usage_rec and id(usage_rec) not in seen_usage_ids:
-                    seen_usage_ids.add(id(usage_rec))
-                    merged_input += usage_rec["input"]
-                    merged_output += usage_rec["output"]
-                    merged_cache_read += usage_rec["cacheRead"]
-                    merged_cache_write += usage_rec["cacheWrite"]
-                    found_any = True
-
-        if not tool_indices and "(生成回复)" in label:
-            # Final segment or no-tool run: find text reply usage
-            if r["end"] and r["start"]:
-                for ts_str, u in text_reply_usage:
-                    if ts_str[:19] >= r["start"][:19] and ts_str[:19] <= r["end"][:19]:
-                        if id(u) not in seen_usage_ids:
-                            merged_usage = u
-                            seen_usage_ids.add(id(u))
-                            merged_input += u["input"]
-                            merged_output += u["output"]
-                            merged_cache_read += u["cacheRead"]
-                            merged_cache_write += u["cacheWrite"]
-                            found_any = True
-                            break
-
-        if found_any:
-            run_total_input += merged_input
-            run_total_output += merged_output
-            run_total_cache_read += merged_cache_read
-            run_total_cache_write += merged_cache_write
-            run_inference_count += 1
-            combined = {
-                "input": merged_input,
-                "output": merged_output,
-                "cacheRead": merged_cache_read,
-                "cacheWrite": merged_cache_write,
-            }
-            per_inference.append((label, ms, combined))
-        elif ms > 0:
-            per_inference.append((label, ms, None))
+    # 工具总耗时
+    total_tool = 0
+    for tool in r["tools"]:
+        if tool["start"] and tool["end"]:
+            ts_t = parse_time(tool["start"])
+            te_t = parse_time(tool["end"])
+            if ts_t and te_t:
+                total_tool += (te_t - ts_t).total_seconds() * 1000
 
     run_total_tokens = run_total_input + run_total_output + run_total_cache_read + run_total_cache_write
 
