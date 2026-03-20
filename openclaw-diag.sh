@@ -214,8 +214,15 @@ enable_advanced_mode() {
     return 0
 }
 
-# 恢复配置（高级模式退出时调用）
+# 恢复配置（高级模式退出时调用，仅执行一次）
+RESTORE_DONE=false
 restore_config() {
+    # 防止重入（EXIT + INT/TERM 重复触发）
+    if [ "$RESTORE_DONE" = true ]; then
+        return 0
+    fi
+    RESTORE_DONE=true
+
     if [ -z "${ADVANCED_BACKUP:-}" ] || [ -z "${ADVANCED_CONFIG:-}" ]; then
         return 0
     fi
@@ -223,7 +230,7 @@ restore_config() {
     echo ""
     echo -e "${BOLD}[高级模式] 退出清理${NC}"
     echo ""
-    read -p "$(echo -e "${YELLOW}是否恢复原始配置并重启 Gateway? [Y/n] ${NC}")" restore_confirm
+    read -p "$(echo -e "${YELLOW}是否恢复原始配置并重启 Gateway? [Y/n] ${NC}")" restore_confirm </dev/tty
     if [[ "$restore_confirm" =~ ^[Nn]$ ]]; then
         echo -e "${GRAY}保留当前高级模式配置${NC}"
         echo -e "${GRAY}备份文件: $ADVANCED_BACKUP${NC}"
@@ -244,7 +251,7 @@ restore_config() {
     fi
 
     # 清理备份文件
-    read -p "$(echo -e "${GRAY}删除备份文件? [y/N] ${NC}")" del_backup
+    read -p "$(echo -e "${GRAY}删除备份文件? [y/N] ${NC}")" del_backup </dev/tty
     if [[ "$del_backup" =~ ^[Yy]$ ]]; then
         rm -f "$ADVANCED_BACKUP"
         echo -e "${GRAY}已删除 $ADVANCED_BACKUP${NC}"
@@ -324,8 +331,8 @@ if [ "$FOLLOW" = true ]; then
     # 高级模式：启用 diagnostics + debug
     if [ "$ADVANCED" = true ]; then
         enable_advanced_mode || exit 1
-        # 注册退出清理
-        trap restore_config EXIT INT TERM
+        # 注册退出清理（仅 EXIT，覆盖所有退出路径包括 Ctrl+C）
+        trap restore_config EXIT
     fi
 
     echo -e "${BOLD}[实时跟踪] Ctrl+C 退出${NC}"
