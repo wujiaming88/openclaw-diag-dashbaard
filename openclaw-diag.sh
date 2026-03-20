@@ -1,9 +1,10 @@
 #!/bin/bash
-# OpenClaw 诊断日志解析工具 v3.0
+# OpenClaw 诊断日志解析工具 v3.1
 # 用法:
 #   ./openclaw-diag.sh              # 解析今天的日志
 #   ./openclaw-diag.sh 2026-03-11   # 解析指定日期
-#   ./openclaw-diag.sh -f           # 实时跟踪模式
+#   ./openclaw-diag.sh -f           # 实时跟踪模式（标准）
+#   ./openclaw-diag.sh -f --advanced # 实时跟踪模式（高级：自动开启 debug 日志）
 #   ./openclaw-diag.sh -l 5         # 只看最近5个run
 #   ./openclaw-diag.sh -s           # 只看摘要统计
 #
@@ -12,6 +13,7 @@
 #   - 从 session 文件提取工具调用参数和 Token 用量
 #   - 计算推理分段耗时和 Token 速率 (inference_ms, tokens_per_sec)
 #   - 实时跟踪模式 (-f) 流式输出
+#   - 高级模式 (--advanced) 自动开启 diagnostics + debug 日志
 #   - 摘要模式 (-s) 快速统计
 #
 # 注: 完整探测功能（health/gateway/doctor/config/models）请使用:
@@ -36,32 +38,255 @@ NC='\033[0m'
 # 默认参数
 DATE=$(date +%F)
 FOLLOW=false
+ADVANCED=false
 LAST_N=0
 SUMMARY_ONLY=false
+
+# ============================================================
+# 高级模式：配置管理函数
+# ============================================================
+
+# 查找 openclaw.json 路径
+find_openclaw_config() {
+    local config=""
+    for p in \
+        "$HOME/.openclaw/openclaw.json" \
+        "/root/.openclaw/openclaw.json" \
+        "/etc/openclaw/openclaw.json"; do
+        if [ -f "$p" ]; then
+            config="$p"
+            break
+        fi
+    done
+    # 尝试 openclaw config validate 输出
+    if [ -z "$config" ]; then
+        config=$(openclaw config validate 2>&1 | grep -oP '(?<=config: ).*\.json' | head -1 2>/dev/null || true)
+    fi
+    echo "$config"
+}
+
+# 备份 openclaw.json
+backup_config() {
+    local config="$1"
+    local backup="${config}.diag-backup.$(date +%s)"
+    cp "$config" "$backup"
+    echo "$backup"
+}
+
+# 检查配置项当前值
+check_config_value() {
+    local config="$1"
+    local key_path="$2"
+    python3 -c "
+import json, sys
+with open('$config') as f:
+    data = json.load(f)
+keys = '$key_path'.split('.')
+obj = data
+for k in keys:
+    obj = obj.get(k, None) if isinstance(obj, dict) else None
+    if obj is None:
+        break
+print(obj if obj is not None else 'NOT_SET')
+" 2>/dev/null
+}
+
+# 修改配置项
+set_config_value() {
+    local config="$1"
+    local key_path="$2"
+    local value="$3"
+    python3 -c "
+import json
+with open('$config') as f:
+    data = json.load(f)
+keys = '$key_path'.split('.')
+obj = data
+for k in keys[:-1]:
+    if k not in obj or not isinstance(obj[k], dict):
+        obj[k] = {}
+    obj = obj[k]
+val = '$value'
+if val == 'true':
+    obj[keys[-1]] = True
+elif val == 'false':
+    obj[keys[-1]] = False
+elif val.isdigit():
+    obj[keys[-1]] = int(val)
+else:
+    obj[keys[-1]] = val
+with open('$config', 'w') as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+" 2>/dev/null
+}
+
+# 启用高级诊断模式
+enable_advanced_mode() {
+    local config
+    config=$(find_openclaw_config)
+    if [ -z "$config" ]; then
+        echo -e "${RED}✘ 找不到 openclaw.json 配置文件${NC}" >&2
+        return 1
+    fi
+
+    echo -e "${BOLD}[高级模式] 配置检查${NC}"
+    echo -e "${GRAY}配置文件: $config${NC}"
+    echo ""
+
+    # 检查当前状态
+    local diag_enabled
+    local log_level
+    diag_enabled=$(check_config_value "$config" "diagnostics.enabled")
+    log_level=$(check_config_value "$config" "logging.level")
+
+    local need_change=false
+    local changes=""
+
+    if [ "$diag_enabled" != "True" ]; then
+        changes="${changes}  diagnostics.enabled: ${RED}${diag_enabled}${NC} → ${GREEN}true${NC}\n"
+        need_change=true
+    else
+        changes="${changes}  diagnostics.enabled: ${GREEN}true${NC} (已启用)\n"
+    fi
+
+    if [ "$log_level" != "debug" ]; then
+        changes="${changes}  logging.level: ${RED}${log_level}${NC} → ${GREEN}debug${NC}\n"
+        need_change=true
+    else
+        changes="${changes}  logging.level: ${GREEN}debug${NC} (已启用)\n"
+    fi
+
+    echo -e "$changes"
+
+    if [ "$need_change" = false ]; then
+        echo -e "${GREEN}✔ 高级模式已经启用，无需修改配置${NC}"
+        echo ""
+        return 0
+    fi
+
+    # 提醒需要重启
+    echo -e "${YELLOW}⚠  开启高级模式需要修改配置并重启 OpenClaw Gateway${NC}"
+    echo -e "${YELLOW}   修改内容: diagnostics.enabled=true, logging.level=debug${NC}"
+    echo ""
+    read -p "$(echo -e "${BOLD}确认修改配置并重启? [y/N] ${NC}")" confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${GRAY}已取消${NC}"
+        return 1
+    fi
+
+    # 备份
+    echo ""
+    local backup
+    backup=$(backup_config "$config")
+    echo -e "${GREEN}✔ 配置已备份: ${GRAY}$backup${NC}"
+    # 将备份路径保存供后续恢复使用
+    ADVANCED_BACKUP="$backup"
+    ADVANCED_CONFIG="$config"
+
+    # 修改配置
+    if [ "$diag_enabled" != "True" ]; then
+        set_config_value "$config" "diagnostics.enabled" "true"
+        echo -e "${GREEN}✔ diagnostics.enabled → true${NC}"
+    fi
+    if [ "$log_level" != "debug" ]; then
+        set_config_value "$config" "logging.level" "debug"
+        echo -e "${GREEN}✔ logging.level → debug${NC}"
+    fi
+
+    # 重启 Gateway
+    echo ""
+    echo -e "${BLUE}⟳ 正在重启 OpenClaw Gateway...${NC}"
+    if openclaw gateway restart 2>&1 | tail -3; then
+        echo -e "${GREEN}✔ Gateway 重启成功${NC}"
+    else
+        echo -e "${RED}✘ Gateway 重启失败，正在恢复配置...${NC}"
+        cp "$backup" "$config"
+        echo -e "${YELLOW}⟳ 配置已恢复，再次重启...${NC}"
+        openclaw gateway restart 2>&1 | tail -3 || true
+        return 1
+    fi
+
+    echo ""
+    echo -e "${GREEN}✔ 高级模式已启用${NC}"
+    echo -e "${GRAY}退出时将提示恢复原始配置${NC}"
+    echo ""
+    return 0
+}
+
+# 恢复配置（高级模式退出时调用）
+restore_config() {
+    if [ -z "${ADVANCED_BACKUP:-}" ] || [ -z "${ADVANCED_CONFIG:-}" ]; then
+        return 0
+    fi
+
+    echo ""
+    echo -e "${BOLD}[高级模式] 退出清理${NC}"
+    echo ""
+    read -p "$(echo -e "${YELLOW}是否恢复原始配置并重启 Gateway? [Y/n] ${NC}")" restore_confirm
+    if [[ "$restore_confirm" =~ ^[Nn]$ ]]; then
+        echo -e "${GRAY}保留当前高级模式配置${NC}"
+        echo -e "${GRAY}备份文件: $ADVANCED_BACKUP${NC}"
+        echo -e "${GRAY}手动恢复: cp $ADVANCED_BACKUP $ADVANCED_CONFIG && openclaw gateway restart${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}⟳ 恢复原始配置...${NC}"
+    cp "$ADVANCED_BACKUP" "$ADVANCED_CONFIG"
+    echo -e "${GREEN}✔ 配置已恢复${NC}"
+
+    echo -e "${BLUE}⟳ 重启 OpenClaw Gateway...${NC}"
+    if openclaw gateway restart 2>&1 | tail -3; then
+        echo -e "${GREEN}✔ Gateway 重启成功，已退出高级模式${NC}"
+    else
+        echo -e "${RED}✘ Gateway 重启失败${NC}"
+        echo -e "${YELLOW}请手动执行: openclaw gateway restart${NC}"
+    fi
+
+    # 清理备份文件
+    read -p "$(echo -e "${GRAY}删除备份文件? [y/N] ${NC}")" del_backup
+    if [[ "$del_backup" =~ ^[Yy]$ ]]; then
+        rm -f "$ADVANCED_BACKUP"
+        echo -e "${GRAY}已删除 $ADVANCED_BACKUP${NC}"
+    fi
+}
+
+# ============================================================
+# 参数解析
+# ============================================================
 
 # 解析参数
 while [[ $# -gt 0 ]]; do
     case $1 in
         -f|--follow)  FOLLOW=true; shift ;;
+        --advanced)   ADVANCED=true; shift ;;
         -l|--last)    LAST_N=$2; shift 2 ;;
         -s|--summary) SUMMARY_ONLY=true; shift ;;
         -h|--help)
-            echo "OpenClaw 诊断日志解析工具"
+            echo "OpenClaw 诊断日志解析工具 v3.1"
             echo ""
             echo "用法: $0 [选项] [日期]"
             echo ""
             echo "选项:"
-            echo "  -f, --follow     实时跟踪模式"
-            echo "  -l N, --last N   只显示最近 N 个 run"
-            echo "  -s, --summary    只显示摘要统计"
-            echo "  -h, --help       帮助"
+            echo "  -f, --follow      实时跟踪模式"
+            echo "  --advanced        高级模式（自动开启 diagnostics + debug 日志）"
+            echo "  -l N, --last N    只显示最近 N 个 run"
+            echo "  -s, --summary     只显示摘要统计"
+            echo "  -h, --help        帮助"
             echo ""
             echo "示例:"
-            echo "  $0                  # 解析今天的日志"
-            echo "  $0 2026-03-11       # 解析指定日期"
-            echo "  $0 -f               # 实时跟踪"
-            echo "  $0 -l 3             # 最近3个run"
-            echo "  $0 -s               # 摘要统计"
+            echo "  $0                    # 解析今天的日志"
+            echo "  $0 2026-03-11         # 解析指定日期"
+            echo "  $0 -f                 # 实时跟踪（标准）"
+            echo "  $0 -f --advanced      # 实时跟踪（高级：自动开启 debug）"
+            echo "  $0 -l 3               # 最近3个run"
+            echo "  $0 -s                 # 摘要统计"
+            echo ""
+            echo "高级模式说明:"
+            echo "  --advanced 会自动修改 openclaw.json 配置:"
+            echo "    - diagnostics.enabled = true"
+            echo "    - logging.level = debug"
+            echo "  启用前会备份配置，退出时提示恢复原始配置并重启"
             exit 0
             ;;
         *)
@@ -96,7 +321,19 @@ if [ -z "$SESSIONS_DIR" ] || [ ! -d "$SESSIONS_DIR" ]; then
 fi
 
 if [ "$FOLLOW" = true ]; then
+    # 高级模式：启用 diagnostics + debug
+    if [ "$ADVANCED" = true ]; then
+        enable_advanced_mode || exit 1
+        # 注册退出清理
+        trap restore_config EXIT INT TERM
+    fi
+
     echo -e "${BOLD}[实时跟踪] Ctrl+C 退出${NC}"
+    if [ "$ADVANCED" = true ]; then
+        echo -e "${GREEN}模式: 高级（diagnostics + debug）${NC}"
+    else
+        echo -e "${GRAY}模式: 标准（提示: 使用 --advanced 开启完整日志）${NC}"
+    fi
     echo -e "${GRAY}日志文件: $LOG${NC}"
     echo ""
     tail -f "$LOG" 2>/dev/null | python3 -c "
@@ -174,6 +411,13 @@ for line in sys.stdin:
 fi
 
 # 非实时模式
+# --advanced 在非实时模式下仅提示，不自动修改配置
+if [ "$ADVANCED" = true ] && [ "$FOLLOW" = false ]; then
+    echo -e "${YELLOW}提示: --advanced 仅在实时跟踪模式 (-f) 下生效${NC}"
+    echo -e "${GRAY}用法: $0 -f --advanced${NC}"
+    echo ""
+fi
+
 NO_LOG=false
 if [ ! -f "$LOG" ]; then
     NO_LOG=true
