@@ -1110,8 +1110,8 @@ if virtual_runs_mode:
     print("  ⚠️  未检测到 debug 日志，使用 session 数据构建时间线（精度有限）")
     print()
 
-total_runs = len(sorted_runs)
-total_tools = sum(len(r["tools"]) for _, r in sorted_runs)
+total_runs = len(runs)
+total_tools = sum(len(r["tools"]) for r in runs.values())
 total_errors = len(errors)
 total_sends = len(sends)
 
@@ -1205,7 +1205,7 @@ run_durations = []
 model_times = []
 tool_times = []
 
-for run_id, r in sorted_runs:
+for run_id, r in runs.items():
     if r["start"] and r["end"]:
         s = parse_time(r["start"])
         e = parse_time(r["end"])
@@ -1353,7 +1353,7 @@ if tool_times:
 if total_tools > 0:
     tool_counts = defaultdict(int)
     tool_dur = defaultdict(list)
-    for _, r in sorted_runs:
+    for r in runs.values():
         for tool in r["tools"]:
             tool_counts[tool["name"]] += 1
             if tool["start"] and tool["end"]:
