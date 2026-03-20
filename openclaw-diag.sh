@@ -954,9 +954,9 @@ if AGENT_FILTER:
             return parts[1] if len(parts) > 1 else ""
         return ""
     sorted_runs = [(rid, r) for rid, r in sorted_runs if _get_run_agent(r) == AGENT_FILTER or not _get_run_agent(r)]
-    # 也过滤 errors/sends
-    errors = [(t, m) for t, m in errors if AGENT_FILTER in m or 'sessionKey=' not in m or f'agent:{AGENT_FILTER}:' in m]
-    sends = [(t, m) for t, m in sends if AGENT_FILTER in m or 'sessionKey=' not in m or f'agent:{AGENT_FILTER}:' in m]
+    # 也过滤 errors/sends：仅保留明确包含目标 agent 的行
+    errors = [(t, m) for t, m in errors if f'agent:{AGENT_FILTER}:' in m]
+    sends = [(t, m) for t, m in sends if f'agent:{AGENT_FILTER}:' in m]
 
 if LAST_N > 0:
     sorted_runs = sorted_runs[-LAST_N:]
@@ -1056,24 +1056,11 @@ if not sorted_runs and all_infer_events:
 # ============================================================
 # 将日期转换为 UTC 日期范围进行比较（考虑时区偏移，最多 ±14 小时）
 def date_matches_utc(ts, target_date):
-    """检查 UTC 时间戳是否可能属于目标本地日期（考虑时区）"""
+    """检查 UTC 时间戳的日期部分是否严格匹配目标日期。
+    时间戳本身就是 UTC，无需 ±1 天容差。"""
     if not ts or not target_date:
         return True  # 无日期过滤
-    # 时间戳格式: 2026-03-19T13:05:30.786Z
-    ts_date = ts[:10]
-    if ts_date == target_date:
-        return True
-    # 考虑时区：前一天和后一天也可能匹配
-    try:
-        from datetime import timedelta
-        target_dt = datetime.strptime(target_date, "%Y-%m-%d")
-        prev_date = (target_dt - timedelta(days=1)).strftime("%Y-%m-%d")
-        next_date = (target_dt + timedelta(days=1)).strftime("%Y-%m-%d")
-        if ts_date == prev_date or ts_date == next_date:
-            return True
-    except:
-        pass
-    return False
+    return ts[:10] == target_date
 
 if DIAG_DATE:
     # 收集目标日期所有 session 推理事件的 tool_ids 和 timestamps
@@ -1093,8 +1080,18 @@ if DIAG_DATE:
     if not virtual_runs_mode and date_valid_tool_ids:
         tool_params = {k: v for k, v in tool_params.items() if k in date_valid_tool_ids}
         tool_details = {k: v for k, v in tool_details.items() if k in date_valid_tool_ids}
-        inference_usage = {k: v for k, v in inference_usage.items() if date_matches_utc(v.get("timestamp", ""), DIAG_DATE)}
-        text_reply_usage = [(ts, u) for ts, u in text_reply_usage if date_matches_utc(ts, DIAG_DATE)]
+    # 始终按日期过滤 inference_usage 和 text_reply_usage（包括虚拟 Run 模式）
+    inference_usage = {k: v for k, v in inference_usage.items() if date_matches_utc(v.get("timestamp", ""), DIAG_DATE)}
+    text_reply_usage = [(ts, u) for ts, u in text_reply_usage if date_matches_utc(ts, DIAG_DATE)]
+    # 虚拟 Run 模式下也按日期过滤 tool_params/tool_details
+    if virtual_runs_mode:
+        # 收集日期匹配的 tool_ids（从已过滤的 inference_usage 中提取）
+        vr_valid_tool_ids = set()
+        for tid, u in inference_usage.items():
+            vr_valid_tool_ids.update(u.get("tool_ids", []))
+            vr_valid_tool_ids.add(tid)
+        tool_params = {k: v for k, v in tool_params.items() if k in vr_valid_tool_ids}
+        tool_details = {k: v for k, v in tool_details.items() if k in vr_valid_tool_ids}
     # 过滤 all_infer_events (用于后续统计)
     all_infer_events = [e for e in all_infer_events if date_matches_utc(e.get("send_ts", ""), DIAG_DATE) or date_matches_utc(e.get("recv_ts", ""), DIAG_DATE)]
 
