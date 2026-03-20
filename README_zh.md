@@ -2,7 +2,7 @@
 
 基于 Web 的 [OpenClaw](https://github.com/nicepkg/openclaw) AI 代理平台性能诊断工具。零外部依赖，纯 Python 标准库实现。
 
-> **v3.0** — Session 优先架构。所有推理耗时、Token 统计和工具分析均纯粹由 `session.jsonl` 数据驱动，标准模式无需配置 debug 日志。
+> **v3.2** — 多 Agent 过滤支持。新增 `-a/--agent` 参数，支持按 Agent 进行批量分析、摘要和实时跟踪。修复日期过滤准确性和 Agent 范围统计的关键 Bug。
 
 ## 📸 效果展示
 
@@ -27,7 +27,7 @@
 ### CLI 命令行模式
 
 ```
-🦞 OpenClaw 诊断工具 v3.0.0
+🦞 OpenClaw 诊断工具 v3.2.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🏥 健康检查 ... ✅ (9.9s)
@@ -66,6 +66,13 @@
 
   推理延迟:    平均 9.4s  (基于 session 时间戳, 1304 次调用)
   Token 吞吐:  平均 32.4 tok/s  (基于 session 时间戳, 1295 次调用)
+
+  Agent 活动分布:
+    clawdoctor      推理  67次  平均     9.0s  吞吐 29.9 tok/s  会话 3
+    main            推理 884次  平均     8.6s  吞吐 36.0 tok/s  会话 7
+    waicode         推理 708次  平均     9.1s  吞吐 41.5 tok/s  会话 18
+    waiqa           推理  25次  平均     8.5s  吞吐 49.6 tok/s  会话 1
+    wairesearch     推理  23次  平均    15.6s  吞吐 47.6 tok/s  会话 1
 
   工具使用排行:
     exec     588次  平均耗时 1.5s
@@ -144,8 +151,10 @@ python3 openclaw-dashboard.py --cli --json                 # JSON 格式输出
 | `update_status` | 安装版本、更新通道、可用更新 | 20s |
 | `models_status` | 默认模型、Fallback、认证状态、已配置模型 | 20s |
 
-### Shell 脚本 (`openclaw-diag.sh` v3.0)
+### Shell 脚本 (`openclaw-diag.sh` v3.2)
 
+- **多 Agent 过滤** — `-a/--agent NAME` 按 Agent 过滤所有统计数据（如 main、waicode、wairesearch、waiqa）
+- **Agent 活动分布** — 摘要新增每个 Agent 的推理次数、平均延迟、Token 吞吐量、会话数
 - **Session 驱动推理耗时** — 从 session.jsonl 精确计算每次 LLM 调用的 `inference_ms` 和 `tokens_per_sec`（与 Python 版对齐）
 - **工具执行详情** — 提取 `toolResult.details`（exitCode、durationMs、stderr 摘要）
 - **工具成功率** — 按工具分组的成功/失败统计
@@ -212,6 +221,9 @@ python3 openclaw-dashboard.py --cli --probe doctor  # 单项探测
 ./openclaw-diag.sh -f           # 实时跟踪
 ./openclaw-diag.sh -l 5         # 最近 5 个 Run
 ./openclaw-diag.sh -s           # 仅摘要
+./openclaw-diag.sh -a waicode 2026-03-19    # 按 Agent 过滤
+./openclaw-diag.sh -s -a main               # 指定 Agent 的摘要
+./openclaw-diag.sh -f -a waicode            # 实时跟踪指定 Agent
 ```
 
 ## 命令行参数
@@ -334,7 +346,7 @@ tokens_per_sec = output_tokens / (inference_ms / 1000)
 ```
 openclaw-diag-dashbaard/
 ├── openclaw-dashboard.py   # Web 面板 + CLI（3900+ 行）
-├── openclaw-diag.sh        # Shell 诊断脚本 v3.0（1100+ 行）
+├── openclaw-diag.sh        # Shell 诊断脚本 v3.2（1100+ 行）
 ├── gateway-restarts.sh     # 独立重启检测脚本
 ├── static/
 │   ├── index.html          # 面板布局
@@ -345,6 +357,29 @@ openclaw-diag-dashbaard/
 ├── README.md               # English documentation
 └── README_zh.md            # 中文文档
 ```
+
+## 更新日志
+
+### v3.2 (2026-03-20)
+
+**新功能**
+- **多 Agent 过滤**（`-a/--agent NAME`）— 按 Agent 名称过滤诊断数据（main、waicode、wairesearch、waiqa 等）
+  - 批量分析：通过 session_uuid→agent 映射过滤 runs、sessions、errors、messages
+  - 实时跟踪模式（`-f`）：按 Agent 过滤事件流
+  - 摘要模式（`-s`）：展示单个 Agent 的统计数据
+- **Agent 活动分布** — 摘要新增每个 Agent 的推理次数、平均延迟、Token 吞吐量、会话数
+
+**Bug 修复**
+- **[P1]** 修复日期过滤使用 ±1 天宽松匹配导致统计数据膨胀约 35% 的严重问题，改为严格 UTC 日期匹配
+- **[P2]** 修复 Agent 过滤未覆盖错误/消息统计的问题
+- **[P3]** 修复虚拟 Run 模式下全局统计未按日期过滤的问题
+
+### v3.0
+
+- Session 优先架构 — 所有分析数据由 `session.jsonl` 驱动
+- 从 `toolResult.details` 提取工具执行统计
+- Thinking 深度分析
+- 标准模式无需配置 debug 日志
 
 ## License
 

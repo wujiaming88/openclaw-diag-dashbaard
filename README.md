@@ -2,7 +2,7 @@
 
 A web-based performance diagnostic tool for the [OpenClaw](https://github.com/nicepkg/openclaw) AI agent platform. Zero external dependencies — pure Python standard library.
 
-> **v3.0** — Session-first architecture. All inference timing, token stats, and tool analytics are driven purely by `session.jsonl` data. No debug log configuration needed for standard mode.
+> **v3.2** — Multi-agent filtering support. New `-a/--agent` flag for per-agent diagnostics across batch, summary, and live follow modes. Critical bug fixes for date filtering accuracy and agent-scoped statistics.
 
 ## 📸 Screenshots
 
@@ -27,7 +27,7 @@ A web-based performance diagnostic tool for the [OpenClaw](https://github.com/ni
 ### CLI Mode
 
 ```
-🦞 OpenClaw 诊断工具 v3.0.0
+🦞 OpenClaw 诊断工具 v3.2.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🏥 健康检查 ... ✅ (9.9s)
@@ -66,6 +66,13 @@ A web-based performance diagnostic tool for the [OpenClaw](https://github.com/ni
 
   推理延迟:    平均 9.4s  (基于 session 时间戳, 1304 次调用)
   Token 吞吐:  平均 32.4 tok/s  (基于 session 时间戳, 1295 次调用)
+
+  Agent 活动分布:
+    clawdoctor      推理  67次  平均     9.0s  吞吐 29.9 tok/s  会话 3
+    main            推理 884次  平均     8.6s  吞吐 36.0 tok/s  会话 7
+    waicode         推理 708次  平均     9.1s  吞吐 41.5 tok/s  会话 18
+    waiqa           推理  25次  平均     8.5s  吞吐 49.6 tok/s  会话 1
+    wairesearch     推理  23次  平均    15.6s  吞吐 47.6 tok/s  会话 1
 
   工具使用排行:
     exec     588次  平均耗时 1.5s
@@ -144,8 +151,10 @@ python3 openclaw-dashboard.py --cli --json                 # JSON output
 | `update_status` | Installed version, update channel, available updates | 20s |
 | `models_status` | Default model, fallbacks, auth status, configured models | 20s |
 
-### Shell Script (`openclaw-diag.sh` v3.0)
+### Shell Script (`openclaw-diag.sh` v3.2)
 
+- **Multi-Agent Filtering** — `-a/--agent NAME` filters all stats by agent (e.g., main, waicode, wairesearch, waiqa)
+- **Agent Activity Distribution** — Summary includes per-agent inference count, avg latency, token throughput, and session count
 - **Session-Based Inference** — Per-call `inference_ms` and `tokens_per_sec` from session.jsonl (aligned with Python dashboard)
 - **Tool Execution Details** — Extracts `toolResult.details` (exitCode, durationMs, stderr summary)
 - **Tool Success Rate** — Per-tool success/failure stats
@@ -212,6 +221,9 @@ python3 openclaw-dashboard.py --cli --probe doctor  # Single probe
 ./openclaw-diag.sh -f           # Live follow mode
 ./openclaw-diag.sh -l 5         # Last 5 runs
 ./openclaw-diag.sh -s           # Summary only
+./openclaw-diag.sh -a waicode 2026-03-19    # Filter by agent
+./openclaw-diag.sh -s -a main               # Summary for specific agent
+./openclaw-diag.sh -f -a waicode            # Live follow specific agent
 ```
 
 ## Command Line Options
@@ -334,7 +346,7 @@ Identifies 4 event types from log files:
 ```
 openclaw-diag-dashbaard/
 ├── openclaw-dashboard.py   # Web dashboard + CLI (3900+ lines)
-├── openclaw-diag.sh        # Shell diagnostic script v3.0 (1100+ lines)
+├── openclaw-diag.sh        # Shell diagnostic script v3.2 (1100+ lines)
 ├── gateway-restarts.sh     # Standalone restart detection
 ├── static/
 │   ├── index.html          # Dashboard layout
@@ -345,6 +357,29 @@ openclaw-diag-dashbaard/
 ├── README.md               # English documentation
 └── README_zh.md            # 中文文档
 ```
+
+## Changelog
+
+### v3.2 (2026-03-20)
+
+**New Features**
+- **Multi-Agent Filtering** (`-a/--agent NAME`) — Filter diagnostics by agent name (main, waicode, wairesearch, waiqa, etc.)
+  - Batch analysis: filters runs, sessions, errors, and messages via session_uuid→agent mapping
+  - Live follow mode (`-f`): filters event stream by agent
+  - Summary mode (`-s`): scoped stats for a single agent
+- **Agent Activity Distribution** — Summary now includes per-agent breakdown: inference count, avg latency, token throughput, session count
+
+**Bug Fixes**
+- **[P1]** Fixed date filter using ±1 day loose matching, causing ~35% stats inflation. Now uses strict UTC date matching
+- **[P2]** Fixed agent filter not covering error/message statistics
+- **[P3]** Fixed virtual Run mode not applying date filter to global statistics
+
+### v3.0
+
+- Session-first architecture — all analytics driven by `session.jsonl`
+- Tool execution stats from `toolResult.details`
+- Thinking depth analysis
+- No debug log configuration needed for standard mode
 
 ## License
 
