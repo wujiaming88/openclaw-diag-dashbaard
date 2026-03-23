@@ -54,6 +54,7 @@ AGENT_FILTER=""
 find_openclaw_config() {
     local config=""
     for p in \
+        "/root/.openclaw/openclaw.json" \
         "$HOME/.openclaw/openclaw.json" \
         "/etc/openclaw/openclaw.json"; do
         if [ -f "$p" ]; then
@@ -320,6 +321,8 @@ LOG="/tmp/openclaw/openclaw-${DATE}.log"
 # 自动查找会话文件目录
 SESSIONS_DIR=""
 for d in \
+    "/root/.openclaw/agents/main/sessions" \
+    "/root/.openclaw/agents/*/sessions" \
     "$HOME/.openclaw/agents/main/sessions" \
     "$HOME/.openclaw/agents/*/sessions"; do
     if [ -d "$d" ] 2>/dev/null; then
