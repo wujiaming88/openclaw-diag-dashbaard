@@ -7,9 +7,9 @@
 #   ./openclaw-diag.sh -f --advanced # 实时跟踪模式（高级：自动开启 debug 日志）
 #   ./openclaw-diag.sh -l 5         # 只看最近5个run
 #   ./openclaw-diag.sh -s           # 只看摘要统计
-#   ./openclaw-diag.sh -a waicode 2026-03-19  # 按 agent 过滤
+#   ./openclaw-diag.sh -a myagent 2026-03-19  # 按 agent 过滤
 #   ./openclaw-diag.sh -s -a main   # 指定 agent 的摘要
-#   ./openclaw-diag.sh -f -a waicode # 实时跟踪指定 agent
+#   ./openclaw-diag.sh -f -a myagent # 实时跟踪指定 agent
 #
 # 功能:
 #   - 解析 OpenClaw 诊断日志，展示 Run 时间线
@@ -55,7 +55,7 @@ find_openclaw_config() {
     local config=""
     for p in \
         "$HOME/.openclaw/openclaw.json" \
-        "/root/.openclaw/openclaw.json" \
+        "$HOME/.openclaw/openclaw.json" \
         "/etc/openclaw/openclaw.json"; do
         if [ -f "$p" ]; then
             config="$p"
@@ -282,7 +282,7 @@ while [[ $# -gt 0 ]]; do
             echo "选项:"
             echo "  -f, --follow      实时跟踪模式"
             echo "  --advanced        高级模式（自动开启 diagnostics + debug 日志）"
-            echo "  -a, --agent NAME  只看指定 agent（如 main/waicode/wairesearch）"
+            echo "  -a, --agent NAME  只看指定 agent（如 main/myagent）"
             echo "  -l N, --last N    只显示最近 N 个 run"
             echo "  -s, --summary     只显示摘要统计"
             echo "  -h, --help        帮助"
@@ -292,7 +292,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 2026-03-11               # 解析指定日期"
             echo "  $0 -f                       # 实时跟踪（标准）"
             echo "  $0 -f --advanced            # 实时跟踪（高级：自动开启 debug）"
-            echo "  $0 -f -a waicode            # 只跟踪 waicode agent"
+            echo "  $0 -f -a myagent            # 只跟踪指定 agent"
             echo "  $0 -a main                  # 只看 main agent"
             echo "  $0 -l 3                     # 最近3个run"
             echo "  $0 -s                       # 摘要统计"
@@ -323,8 +323,8 @@ SESSIONS_DIR=""
 for d in \
     "$HOME/.openclaw/agents/main/sessions" \
     "$HOME/.openclaw/agents/*/sessions" \
-    "/root/.openclaw/agents/main/sessions" \
-    "/root/.openclaw/agents/*/sessions"; do
+    "$HOME/.openclaw/agents/main/sessions" \
+    "$HOME/.openclaw/agents/*/sessions"; do
     if [ -d "$d" ] 2>/dev/null; then
         SESSIONS_DIR="$d"
         break
@@ -356,17 +356,16 @@ if [ "$FOLLOW" = true ]; then
     fi
     echo -e "${GRAY}日志文件: $LOG${NC}"
     echo ""
-    AGENT_FILTER_ENV="$AGENT_FILTER" tail -f "$LOG" 2>/dev/null | python3 -c "
+    export AGENT_FILTER_ENV="$AGENT_FILTER"
+    tail -f "$LOG" 2>/dev/null | python3 -c "
 import json, sys, os, re
 from datetime import datetime
 
 # Agent 颜色映射
 AGENT_COLORS = {
     'main':        '\033[0;36m',     # cyan
-    'waicode':     '\033[0;32m',     # green
-    'waidesign':   '\033[0;35m',     # magenta
-    'wairesearch': '\033[0;33m',     # yellow
-    'waiqa':       '\033[0;34m',     # blue
+    # 自定义 agent 颜色（按需添加）
+    # 'agent_name': '\033[0;32m',  # green
 }
 NC = '\033[0m'
 BOLD = '\033[1m'
@@ -376,15 +375,15 @@ agent_filter = os.environ.get('AGENT_FILTER_ENV', '')
 
 # 从日志消息中提取 agent 名称
 def extract_agent(msg):
-    # sessionKey=agent:waicode:main → waicode
+    # sessionKey=agent:<name>:<id> → <name>
     m = re.search(r'sessionKey=agent:([^:\s]+)', msg)
     if m:
         return m.group(1)
-    # lane=session:agent:wairesearch:main → wairesearch
+    # lane=session:agent:<name>:<id> → <name>
     m = re.search(r'lane=session:agent:([^:\s]+)', msg)
     if m:
         return m.group(1)
-    # [waicode] starting provider → waicode
+    # [<agent>] starting provider → <name>
     m = re.search(r'\[(\w+)\]\s+(?:starting|stopping)', msg)
     if m and m.group(1) != 'openclaw':
         return m.group(1)
@@ -398,6 +397,8 @@ def agent_tag(agent):
 
 # 跟踪每个 agent 的上一次时间戳
 agent_prev_times = {}
+# 当前活跃 agent（无标记事件继承最近一次有标记的 agent）
+current_agent = ''
 
 for line in sys.stdin:
     try:
@@ -409,9 +410,13 @@ for line in sys.stdin:
 
         # 提取 agent
         agent = extract_agent(msg)
+        if agent:
+            current_agent = agent
+        else:
+            agent = current_agent
 
         # 过滤
-        if agent_filter and agent and agent != agent_filter:
+        if agent_filter and agent != agent_filter:
             continue
 
         label = None
@@ -543,7 +548,7 @@ AGENT_FILTER = os.environ.get("DIAG_AGENT_FILTER", "")
 # ============================================================
 # toolCallId -> {name, summary, workdir}
 tool_params = {}
-# toolCallId -> {toolName, isError, exitCode, durationMs, status, cwd, diff, url, tookMs, childSessionKey}
+# toolCallId -> {toolName, isError, exitCode, durationMs, status, cwd, diff, url, tookMs, child_sess_id}
 tool_details = {}
 
 # 每次推理的 token 用量: toolCallId -> usage dict
@@ -556,7 +561,7 @@ text_reply_usage = []  # [(timestamp, usage)]
 # session_uuid → agent 映射 (用于日志 Run 的 agent 归属判定)
 session_uuid_to_agent = {}
 
-# 推理事件序列 (session-based): session_key -> [event_dict]
+# 推理事件序列 (session-based): sess_ref -> [event_dict]
 session_infer_events = defaultdict(list)
 # 所有推理事件(用于时间窗口匹配)
 all_infer_events = []
@@ -569,7 +574,7 @@ def extract_tool_summary(name, args):
     query = args.get("query", "")
     url = args.get("url", "")
     action = args.get("action", "")
-    task = args.get("task", "")
+    tsk_desc = args.get("task", "")
     text = args.get("text", "")
     message = args.get("message", "")
     old_str = args.get("old_string", "") or args.get("oldText", "")
@@ -607,7 +612,7 @@ def extract_tool_summary(name, args):
         agent = args.get("agentId", "?")
         parts.append(f"agent={agent}")
         if task:
-            parts.append(task[:50])
+            parts.append(tsk_desc[:50])
     elif name == "memory_search":
         parts.append(f'查询: "{query}"')
     elif name == "memory_get":
@@ -645,7 +650,7 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
             all_session_files.extend(glob.glob(os.path.join(SESSIONS_DIR, ext_pat)))
     for sf in all_session_files:
         try:
-            # 从文件路径推导 session_key: agents/{agent}/sessions/{id}.jsonl -> {agent}:{id}
+            # 从文件路径推导 sess_ref: agents/{agent}/sessions/{id}.jsonl -> {agent}:{id}
             sf_parts = sf.replace("\\", "/").split("/")
             sf_fname = os.path.basename(sf)
             sf_base = sf_fname
@@ -660,7 +665,7 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                 if p == "agents" and pi + 1 < len(sf_parts):
                     sf_agent = sf_parts[pi + 1]
                     break
-            sf_session_key = f"{sf_agent}:{sf_session_id}" if sf_agent else sf_session_id
+            sf_sess_ref = f"{sf_agent}:{sf_session_id}" if sf_agent else sf_session_id
 
             # 建立 session_uuid → agent 映射
             if sf_agent and sf_session_id:
@@ -722,7 +727,7 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                                     "diff": details.get("diff", ""),
                                     "url": details.get("url", ""),
                                     "tookMs": details.get("tookMs"),
-                                    "childSessionKey": details.get("childSessionKey", ""),
+                                    "child_sess_id": details.get("child_sess_id", ""),
                                 }
                             continue
 
@@ -792,7 +797,7 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                         if prev_top_timestamp and timestamp and inference_ms > 0:
                             infer_round += 1
                             infer_evt = {
-                                "session_key": sf_session_key,
+                                "sess_ref": sf_sess_ref,
                                 "send_ts": prev_top_timestamp,
                                 "recv_ts": timestamp,
                                 "inference_ms": inference_ms,
@@ -803,7 +808,7 @@ if SESSIONS_DIR and os.path.isdir(SESSIONS_DIR):
                                 "tokens_per_sec": tokens_per_sec,
                                 "model": model,
                             }
-                            session_infer_events[sf_session_key].append(infer_evt)
+                            session_infer_events[sf_sess_ref].append(infer_evt)
                             all_infer_events.append(infer_evt)
 
                     except:
@@ -845,9 +850,9 @@ for t, level, msg in events:
             "start": None, "end": None,
             "events": [], "tools": [],
             "model": "", "channel": "",
-            "first_token": None,
+            "first_recv_ts": None,
             "prompt_messages": 0,
-            "session_key": "",
+            "sess_ref": "",
             "session_uuid": "",  # session file UUID (from sessionId= in log)
         }
 
@@ -867,7 +872,7 @@ for t, level, msg in events:
             r["session_uuid"] = msg.split("sessionId=")[1].split(" ")[0]
 
     elif "run agent start" in msg:
-        r["first_token"] = t
+        r["first_recv_ts"] = t
 
     elif "run agent end" in msg or "run end" in msg:
         r["end"] = t
@@ -890,7 +895,7 @@ for t, level, msg in events:
         except:
             pass
         if "sessionKey=" in msg:
-            r["session_key"] = msg.split("sessionKey=")[1].split(" ")[0]
+            r["sess_ref"] = msg.split("sessionKey=")[1].split(" ")[0]
         # 从 sessionFile= 提取 session UUID，构造与 session_infer_events 一致的 key
         if "sessionFile=" in msg:
             _sf_path = msg.split("sessionFile=")[1].split(" ")[0]
@@ -901,7 +906,7 @@ for t, level, msg in events:
                 if _pp == "agents" and _pi + 1 < len(_sf_parts):
                     _sf_agent = _sf_parts[_pi + 1]
                     break
-            r["session_key"] = f"{_sf_agent}:{_sf_name}" if _sf_agent else _sf_name
+            r["sess_ref"] = f"{_sf_agent}:{_sf_name}" if _sf_agent else _sf_name
 
 # 收集 sendMessage 事件
 sends = [(t, msg) for t, level, msg in events if "sendMessage" in msg]
@@ -943,17 +948,17 @@ def bar(ms, max_ms=30000, width=20):
 # 按时间排序
 sorted_runs = sorted(runs.items(), key=lambda x: x[1]["start"] or "")
 
-# Agent 过滤：通过 session_uuid 和 session_key 判断 run 属于哪个 agent
+# Agent 过滤：通过 session_uuid 和 sess_ref 判断 run 属于哪个 agent
 if AGENT_FILTER:
     def _get_run_agent(r):
         # 优先通过 session_uuid 查 agent
         uuid = r.get("session_uuid", "")
         if uuid and uuid in session_uuid_to_agent:
             return session_uuid_to_agent[uuid]
-        # 回退：从 session_key 提取 (agent:xxx:main)
-        sk = r.get("session_key", "")
-        if sk.startswith("agent:"):
-            parts = sk.split(":")
+        # 回退：从 sess_ref 提取 (agent:xxx:main)
+        sref = r.get("sess_ref", "")
+        if sref.startswith("agent:"):
+            parts = sref.split(":")
             return parts[1] if len(parts) > 1 else ""
         return ""
     sorted_runs = [(rid, r) for rid, r in sorted_runs if _get_run_agent(r) == AGENT_FILTER or not _get_run_agent(r)]
@@ -980,20 +985,20 @@ if not sorted_runs and all_infer_events:
             continue
         date_filtered_events.append(evt)
 
-    # 按 session_key 分组
+    # 按 sess_ref 分组
     session_groups = defaultdict(list)
     for evt in date_filtered_events:
-        sk = evt["session_key"]
-        # Agent 过滤（虚拟 Run: session_key 格式 waicode:uuid）
+        sref = evt["sess_ref"]
+        # Agent 过滤（虚拟 Run: sess_ref 格式 <agent>:uuid）
         if AGENT_FILTER:
-            agent_part = sk.split(":")[0] if ":" in sk else ""
+            agent_part = sref.split(":")[0] if ":" in sref else ""
             if agent_part and agent_part != AGENT_FILTER:
                 continue
-        session_groups[sk].append(evt)
+        session_groups[sref].append(evt)
 
-    # 为每个 session_key 构造虚拟 Run
+    # 为每个 sess_ref 构造虚拟 Run
     virtual_run_id = 0
-    for sk, evts in sorted(session_groups.items(), key=lambda x: min(e["send_ts"] for e in x[1])):
+    for sref, evts in sorted(session_groups.items(), key=lambda x: min(e["send_ts"] for e in x[1])):
         virtual_run_id += 1
         vrun_id = f"virtual-{virtual_run_id}"
 
@@ -1040,17 +1045,17 @@ if not sorted_runs and all_infer_events:
             "tools": v_tools,
             "model": v_model,
             "channel": "",
-            "first_token": v_start,
+            "first_recv_ts": v_start,
             "prompt_messages": 0,
-            "session_key": sk,
+            "sess_ref": sref,
             "virtual": True,
         }
 
     # 重新排序
     sorted_runs = sorted(runs.items(), key=lambda x: x[1]["start"] or "")
-    # Agent 过滤（虚拟 Run 的 session_key 格式: waicode:uuid）
+    # Agent 过滤（虚拟 Run 的 sess_ref 格式: <agent>:uuid）
     if AGENT_FILTER:
-        sorted_runs = [(rid, r) for rid, r in sorted_runs if r.get("session_key", "").startswith(AGENT_FILTER + ":") or not r.get("session_key")]
+        sorted_runs = [(rid, r) for rid, r in sorted_runs if r.get("sess_ref", "").startswith(AGENT_FILTER + ":") or not r.get("sess_ref")]
     if LAST_N > 0:
         sorted_runs = sorted_runs[-LAST_N:]
 
@@ -1124,10 +1129,10 @@ def calc_inference_segments(r):
     segments = []  # [(label, ms, tool_indices)]
     total_tool_ms = 0
 
-    if not r["first_token"]:
+    if not r["first_recv_ts"]:
         return segments, 0, 0
 
-    ft = parse_time(r["first_token"])
+    ft = parse_time(r["first_recv_ts"])
     if not ft:
         return segments, 0, 0
 
@@ -1172,7 +1177,7 @@ def calc_inference_segments(r):
                 total_tool_ms += (te - ts).total_seconds() * 1000
 
     # Build inference segments
-    prev_end = ft  # starts at agent_start (first_token)
+    prev_end = ft  # starts at agent_start (first_recv_ts)
 
     for b_idx, batch in enumerate(batches):
         batch_start = batch[0][0]  # first tool start in batch
@@ -1220,8 +1225,8 @@ for run_id, r in sorted_runs:
     if session_uuid_g:
         run_start_g = parse_time(r["start"])
         run_end_g = parse_time(r["end"])
-        for sk, evts in session_infer_events.items():
-            if session_uuid_g in sk:
+        for sref, evts in session_infer_events.items():
+            if session_uuid_g in sref:
                 if run_start_g and run_end_g:
                     for evt_g in evts:
                         evt_s_g = parse_time(evt_g["send_ts"])
@@ -1232,11 +1237,11 @@ for run_id, r in sorted_runs:
                     matched_g.extend(evts)
                 break
     
-    # 策略2: 通过 session_key 匹配 (虚拟 Run)
+    # 策略2: 通过 sess_ref 匹配 (虚拟 Run)
     if not matched_g:
-        session_key_g = r.get("session_key", "")
-        if session_key_g in session_infer_events:
-            matched_g = list(session_infer_events[session_key_g])
+        sess_ref_g = r.get("sess_ref", "")
+        if sess_ref_g in session_infer_events:
+            matched_g = list(session_infer_events[sess_ref_g])
     
     # 策略3: 时间窗口匹配 (fallback)
     if not matched_g and r["start"] and r["end"]:
@@ -1372,20 +1377,20 @@ if total_tools > 0:
 
 # Agent 活动分布
 agent_stats = defaultdict(lambda: {"infer_count": 0, "total_infer_ms": 0, "total_output": 0, "tool_count": 0, "sessions": set()})
-for sk, evts in session_infer_events.items():
-    agent_name = sk.split(":")[0] if ":" in sk else "unknown"
+for sref, evts in session_infer_events.items():
+    agent_name = sref.split(":")[0] if ":" in sref else "unknown"
     for evt in evts:
         if not (date_matches_utc(evt.get("send_ts", ""), DIAG_DATE) or date_matches_utc(evt.get("recv_ts", ""), DIAG_DATE)):
             continue
         agent_stats[agent_name]["infer_count"] += 1
         agent_stats[agent_name]["total_infer_ms"] += evt.get("inference_ms", 0)
         agent_stats[agent_name]["total_output"] += evt.get("output_tokens", 0)
-        agent_stats[agent_name]["sessions"].add(sk)
+        agent_stats[agent_name]["sessions"].add(sref)
 # 工具统计（从 tool_details）
 for td in tool_details.values():
-    # 尝试从 session_key 推导 agent
-    td_sk = td.get("session_key", "")
-    td_agent = td_sk.split(":")[0] if ":" in td_sk else ""
+    # 尝试从 sess_ref 推导 agent
+    td_sref = td.get("sess_ref", "")
+    td_agent = td_sref.split(":")[0] if ":" in td_sref else ""
     if td_agent:
         agent_stats[td_agent]["tool_count"] += 1
 
@@ -1451,8 +1456,8 @@ for i, (run_id, r) in enumerate(sorted_runs):
     print(f"  Run ID:     {run_id}")
     print(f"  模型:       {r['model']}")
     print(f"  渠道:       {r['channel']}")
-    if r["session_key"]:
-        print(f"  会话:       {r['session_key']}")
+    if r["sess_ref"]:
+        print(f"  会话:       {r['sess_ref']}")
     if r["prompt_messages"]:
         print(f"  历史消息数: {r['prompt_messages']}")
     _start_dt = parse_time(r['start'])
@@ -1485,15 +1490,15 @@ for i, (run_id, r) in enumerate(sorted_runs):
     # 收集所有 model send/recv 事件（支持多轮推理）
     # 从 session 获取推理事件
     matched_session_events = []
-    session_key = r.get("session_key", "")
+    sess_ref = r.get("sess_ref", "")
     session_uuid = r.get("session_uuid", "")
 
     # 策略1: 通过 session_uuid 匹配 (session_infer_events keyed by "{agent}:{uuid}")
     # session_uuid 来自日志的 sessionId=
     if session_uuid:
-        for sk, evts in session_infer_events.items():
+        for sref, evts in session_infer_events.items():
             # sk format: "main:b5a65d81-..." or just "b5a65d81-..."
-            if session_uuid in sk:
+            if session_uuid in sref:
                 # 按 Run 时间窗口过滤
                 run_start_dt = parse_time(r["start"])
                 run_end_dt = parse_time(r["end"])
@@ -1508,9 +1513,9 @@ for i, (run_id, r) in enumerate(sorted_runs):
                     matched_session_events.extend(evts)
                 break
 
-    # 策略2: 通过 session_key 精确匹配 (虚拟 Run 使用)
-    if not matched_session_events and session_key and session_key in session_infer_events:
-        matched_session_events = list(session_infer_events[session_key])
+    # 策略2: 通过 sess_ref 精确匹配 (虚拟 Run 使用)
+    if not matched_session_events and sess_ref and sess_ref in session_infer_events:
+        matched_session_events = list(session_infer_events[sess_ref])
         # 对虚拟 Run，按日期过滤（session 可能跨天）
         if r.get("virtual") and DIAG_DATE:
             matched_session_events = [e for e in matched_session_events if e["send_ts"][:10] == DIAG_DATE]
@@ -1608,7 +1613,7 @@ for i, (run_id, r) in enumerate(sorted_runs):
                     if took is not None:
                         detail_extra = f"  took={took}ms"
                 elif tname == "sessions_spawn":
-                    csk = td.get("childSessionKey", "")
+                    csk = td.get("child_sess_id", "")
                     if csk:
                         detail_extra = f"  child={csk}"
                 if td.get("isError"):
@@ -1701,8 +1706,8 @@ for i, (run_id, r) in enumerate(sorted_runs):
 
     # token 统计
     print(f"    Token 统计:")
-    print(f"      输入 token:   {run_total_input:>8}")
-    print(f"      输出 token:   {run_total_output:>8}")
+    print(f"      输入 tok:   {run_total_input:>8}")
+    print(f"      输出 tok:   {run_total_output:>8}")
     print(f"      缓存读取:     {run_total_cache_read:>8}")
     print(f"      缓存写入:     {run_total_cache_write:>8}")
     if run_total_output > 0 and total_infer > 0:
@@ -1721,7 +1726,7 @@ for i, (run_id, r) in enumerate(sorted_runs):
     if matched_session_events:
         print()
         print(f"    推理分段明细:")
-        print(f"      {'段':^24} {'耗时':>8} {'输出token':>10} {'速率':>12}")
+        print(f"      {'段':^24} {'耗时':>8} {'输出tok':>10} {'速率':>12}")
         print(f"      {'─'*24} {'─'*8} {'─'*10} {'─'*12}")
         for idx_s, evt in enumerate(matched_session_events, 1):
             inf_ms = evt["inference_ms"]
