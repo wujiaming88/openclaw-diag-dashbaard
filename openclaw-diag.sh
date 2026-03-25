@@ -357,8 +357,6 @@ if [ "$FOLLOW" = true ]; then
     echo -e "${GRAY}日志文件: $LOG${NC}"
     echo ""
     export AGENT_FILTER_ENV="$AGENT_FILTER"
-    # 确保 bash/./两种调用方式下信号传播一致
-    set -m  # 启用 job control，让管道在独立进程组中运行
     tail -f "$LOG" 2>/dev/null | python3 -u -c "
 import json, sys, os, re
 from datetime import datetime
