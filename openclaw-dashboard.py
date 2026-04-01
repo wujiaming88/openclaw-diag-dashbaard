@@ -454,6 +454,28 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         })
 
     @staticmethod
+    def _mask_env_vars(env_dict):
+        """对敏感环境变量值进行脱敏"""
+        import re
+        sensitive_keys = re.compile(r'(key|token|secret|password|auth|credential|bearer|private|absk)', re.I)
+        sensitive_vals = re.compile(r'^(sk-|ghp_|ghu_|AKIA|eyJ|xox[bposa]-)', re.I)
+
+        def mask(val):
+            s = str(val)
+            if len(s) <= 8:
+                return s[:2] + "***"
+            return s[:4] + "***" + s[-4:]
+
+        masked = {}
+        for k, v in env_dict.items():
+            vs = str(v)
+            if sensitive_keys.search(k) or sensitive_vals.match(vs):
+                masked[k] = mask(vs)
+            else:
+                masked[k] = v
+        return masked
+
+    @staticmethod
     def _normalize_restarts(raw_restarts):
         """将 Collector 上报的 restarts 格式化为前端 renderRestarts 期望的格式"""
         normalized = []
@@ -464,7 +486,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 "shutdown_utc": r.get("timestamp", r.get("shutdown_utc")),
                 "startup_utc": r.get("startup_utc"),
                 "downtime_sec": r.get("downtime_sec", 0),
-                "details": r.get("details", r.get("reason", "")),
+                "reason": r.get("details", r.get("reason", "")),
             })
         return {"restarts": normalized, "total": len(normalized), "current_pid": "", "current_since": ""}
 
@@ -506,6 +528,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         avg_infer_ms = raw.get("avg_inference_ms", 0) or ((total_infer_ms / len(infer_items)) if infer_items else 0)
         tps_items = [m.get("tokens_per_sec", 0) for m in mc if m.get("tokens_per_sec", 0) > 0]
         avg_tps = (sum(tps_items) / len(tps_items)) if tps_items else 0
+        # Thinking 统计
+        thinking_stats = payload.get("thinking_stats", {})
+        thinking_calls = [m for m in mc if m.get("thinking_chars", 0) > 0]
+        thinking_total_chars = sum(m.get("thinking_chars", 0) for m in mc)
+        thinking_calls_count = len(thinking_calls) or thinking_stats.get("total_thinking", 0)
+        # 计算 thinking 占输出 token 比例 (chars ≈ tokens * 4)
+        total_output_tokens = sum(m.get("output_tokens", 0) for m in mc) or raw.get("total_output_tokens", 0)
+        thinking_avg_ratio = (thinking_total_chars / (thinking_total_chars + total_output_tokens * 4)) if (thinking_total_chars + total_output_tokens * 4) > 0 else 0
         return {
             # 前端 renderSummary 使用的字段 — 第一行
             "session_model_call_count": raw.get("total_model_calls", len(mc)),
@@ -526,6 +556,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             "tool_error_count": tool_error_count,
             "tool_avg_duration_ms": round(avg_tool_ms, 1),
             "avg_tool_ms": round(avg_tool_ms, 1),
+            # 第三行 — Thinking 统计
+            "thinking_total_chars": thinking_total_chars or (thinking_stats.get("avg_chars", 0) * thinking_stats.get("total_thinking", 0)),
+            "thinking_calls_count": thinking_calls_count,
+            "thinking_avg_ratio": round(thinking_avg_ratio, 4),
             # 兼容: 保留原始字段
             **raw,
         }
@@ -617,7 +651,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         elif endpoint == "model_switches":
             self._send_json(payload.get("model_switches", []))
         elif endpoint == "env_vars":
-            self._send_json(payload.get("env_vars", {}))
+            raw_env = payload.get("env_vars", {})
+            self._send_json(self._mask_env_vars(raw_env))
         elif endpoint == "openclaw_config":
             self._send_json(payload.get("openclaw_config", {}))
         elif endpoint == "bash_history":
