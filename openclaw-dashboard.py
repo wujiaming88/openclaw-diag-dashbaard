@@ -2206,7 +2206,8 @@ class DataStore(object):
         for m in all_msgs:
             if session_id and m.get("session_id", "") != session_id:
                 continue
-            if date and m.get("timestamp", "")[:10] != date:
+            # 当指定了 session_id 时，不再按日期过滤（会话可能跨天）
+            if not session_id and date and m.get("timestamp", "")[:10] != date:
                 continue
             filtered.append(m)
 
