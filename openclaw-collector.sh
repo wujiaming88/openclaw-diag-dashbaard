@@ -1319,10 +1319,20 @@ run_foreground() {
     done
 }
 
+show_node_info() {
+    local ip
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$ip" ] && ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null)
+    [ -z "$ip" ] && ip="unknown"
+    echo -e "${CYAN}上报节点 IP: ${BOLD}${ip}${NC}"
+    echo -e "${CYAN}上报目标: ${DASHBOARD_URL}${NC}"
+}
+
 run_daemon() {
     # 在 daemon 启动前先启用高级采集（交互式确认）
     enable_advanced_collection || true
     echo -e "${CYAN}启动后台采集...${NC}"
+    show_node_info
     # 将备份路径写入配置，供 --stop 还原
     if [ -n "$OPENCLAW_CONFIG_BACKUP" ]; then
         python3 -c "
@@ -1350,6 +1360,7 @@ run_once() {
     setup_exit_trap
     enable_advanced_collection || true
     echo -e "${CYAN}执行单次采集上报...${NC}"
+    show_node_info
     collect_and_report
 }
 
