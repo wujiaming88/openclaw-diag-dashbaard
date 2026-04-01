@@ -4248,16 +4248,11 @@ def main():
         print("[警告] 会话目录未找到, Token 数据将不可用")
 
     # 预加载 session 数据
-    if not args.no_local:
-        store.start_preload()
+    # Dashboard 为纯远程模式，不加载本地数据
+    # store 仍然初始化但不预加载，仅供兼容
 
-    # 初始化节点存储
+    # 初始化节点存储（纯远程模式）
     node_store = NodeStore()
-    if not args.no_local:
-        # 注册本地节点
-        def _register_local():
-            node_store.register_local(store)
-        threading.Thread(target=_register_local, daemon=True).start()
 
     # API Key
     api_key = args.api_key or os.environ.get("DIAG_API_KEY", "")

@@ -6,7 +6,7 @@
 // 状态
 // ============================================================
 var currentDate = '';
-var currentNode = '';  // '' = local/legacy mode, 'xxx' = remote node
+var currentNode = '';  // '' = no node selected, 'xxx' = remote node
 var nodesList = [];    // [{node_id, node_name, last_report_at, status}]
 var autoTimer = null;
 var autoInterval = 30000;
@@ -188,7 +188,7 @@ function api(path, cb) {
 
 function fetchMode(cb) {
   var datePart = currentDate ? '?date=' + currentDate : '';
-  var path = currentNode ? nodeApiPath('/api/mode') : '/api/mode';
+  var path = nodeApiPath('/api/mode');
   api(path + datePart, function (data) {
     if (data) {
       dashboardMode = data.mode || 'auto';
@@ -209,9 +209,9 @@ function fetchNodes(cb) {
       return;
     }
     nodesList = nodes;
-    // Default: local data (empty currentNode); only switch to remote if user selects
+    // 自动选中第一个远程节点
     if (!currentNode && nodes.length > 0) {
-      currentNode = '';  // stay on local
+      currentNode = nodes[0].node_id;
     }
     renderNodeSelector();
     if (cb) cb();
@@ -223,19 +223,14 @@ function renderNodeSelector() {
   if (!sel) return;
   sel.innerHTML = '';
   if (nodesList.length === 0) {
-    // No remote nodes — hide selector
+    // 无远程节点 — 隐藏选择器
     var wrap = sel.closest('.node-selector-wrap');
     if (wrap) wrap.style.display = 'none';
     return;
   }
   var wrap = sel.closest('.node-selector-wrap');
   if (wrap) wrap.style.display = '';
-  // Always add local option first
-  var localOpt = document.createElement('option');
-  localOpt.value = '';
-  localOpt.textContent = '📍 本机';
-  sel.appendChild(localOpt);
-  // Then remote nodes
+  // 只列远程上报节点
   nodesList.forEach(function(n) {
     var o = document.createElement('option');
     o.value = n.node_id;
@@ -249,7 +244,13 @@ function renderNodeSelector() {
 // (fetchSystemInfo removed)
 
 function fetchDates() {
-  var path = currentNode ? nodeApiPath('/api/dates') : '/api/dates';
+  if (!currentNode) {
+    var sel = $('#dateSelect');
+    if (sel) sel.innerHTML = '<option>等待节点上报...</option>';
+    showEmpty();
+    return;
+  }
+  var path = nodeApiPath('/api/dates');
   api(path, function (dates) {
     var sel = $('#dateSelect');
     sel.innerHTML = '';
@@ -270,7 +271,7 @@ function fetchDates() {
 }
 
 function fetchSummary(date) {
-  var path = currentNode ? nodeApiPath('/api/summary') : '/api/summary';
+  var path = nodeApiPath('/api/summary');
   api(path + '?date=' + date, function (summary) {
     var skeleton = $('#skeletonCards');
     if (skeleton) skeleton.style.display = 'none';
@@ -279,7 +280,7 @@ function fetchSummary(date) {
 }
 
 function fetchEventsSummary(date) {
-  var path = currentNode ? nodeApiPath('/api/events') : '/api/events';
+  var path = nodeApiPath('/api/events');
   api(path + '?date=' + date, function (data) {
     renderEventsSummary(data);
     renderPipeline(data);
@@ -287,7 +288,7 @@ function fetchEventsSummary(date) {
 }
 
 function fetchRuns(date, page, pp) {
-  var path = currentNode ? nodeApiPath('/api/runs') : '/api/runs';
+  var path = nodeApiPath('/api/runs');
   api(path + '?date=' + date + '&page=' + page + '&per_page=' + pp, function (data) {
     renderRunList(data);
   });
@@ -295,7 +296,7 @@ function fetchRuns(date, page, pp) {
 
 function fetchRunDetail(rid, el) {
   el.innerHTML = '<div class="loading"><span class="spinner"></span>加载详情...</div>';
-  var path = currentNode ? nodeApiPath('/api/run/' + rid) : '/api/run/' + rid;
+  var path = nodeApiPath('/api/run/' + rid);
   api(path + '?date=' + currentDate, function (d) {
     if (!d) { el.innerHTML = '<p>加载失败</p>'; return; }
     renderRunDetail(d, el);
@@ -303,7 +304,7 @@ function fetchRunDetail(rid, el) {
 }
 
 function fetchModelCalls(date, page, pp) {
-  var path = currentNode ? nodeApiPath('/api/model_calls') : '/api/model_calls';
+  var path = nodeApiPath('/api/model_calls');
   api(path + '?date=' + date + '&page=' + page + '&per_page=' + pp, function (data) {
     renderModelCallsList(data);
   });
@@ -1103,7 +1104,7 @@ window.toggleConversationSection = function (el) {
 
 function loadSessionsList() {
   var date = currentDate;
-  var path = currentNode ? nodeApiPath('/api/sessions') : '/api/sessions';
+  var path = nodeApiPath('/api/sessions');
   api(path + '?date=' + (date || ''), function (sessions) {
     var sel = $('#sessionSelect');
     if (!sel) return;
@@ -1138,7 +1139,7 @@ window.loadConversationTree = function () {
     return;
   }
   tree.innerHTML = '<div class="loading"><span class="spinner"></span>加载会话...</div>';
-  var convPath = currentNode ? nodeApiPath('/api/conversation_tree') : '/api/conversation_tree';
+  var convPath = nodeApiPath('/api/conversation_tree');
   api(convPath + '?session_id=' + encodeURIComponent(sid) + '&date=' + (currentDate || ''), function (messages) {
     if (!messages || messages.length === 0) {
       tree.innerHTML = '<div class="empty" style="padding:24px"><div class="icon">📭</div><p>暂无消息</p></div>';
@@ -1243,7 +1244,18 @@ function loadData() {
 
   conversationLoaded = false;
   var d = currentDate;
-  var dashPath = currentNode ? nodeApiPath('/api/dashboard') : '/api/dashboard';
+
+  // 纯远程模式：无节点选中时显示空状态
+  if (!currentNode) {
+    var skeleton = $('#skeletonCards');
+    if (skeleton) skeleton.style.display = 'none';
+    renderSummary(null);
+    renderRestarts(null);
+    renderModelCallsList(null);
+    return;
+  }
+
+  var dashPath = nodeApiPath('/api/dashboard');
   api(dashPath + '?date=' + d + '&page=' + currentPage + '&per_page=' + perPage + '&mc_page=' + mcPage + '&mc_per_page=' + mcPerPage, function (data) {
     var skeleton = $('#skeletonCards');
     if (skeleton) skeleton.style.display = 'none';
