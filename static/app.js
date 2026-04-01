@@ -6,7 +6,7 @@
 // 状态
 // ============================================================
 var currentDate = '';
-var currentNode = '';  // '' = legacy mode (no node), 'local' = local, 'xxx' = remote
+var currentNode = '';  // '' = local/legacy mode, 'xxx' = remote node
 var nodesList = [];    // [{node_id, node_name, last_report_at, status}]
 var autoTimer = null;
 var autoInterval = 30000;
@@ -209,10 +209,9 @@ function fetchNodes(cb) {
       return;
     }
     nodesList = nodes;
-    // Default: select 'local' if present, otherwise first
-    if (!currentNode) {
-      var local = nodes.find(function(n) { return n.node_id === 'local'; });
-      currentNode = local ? 'local' : nodes[0].node_id;
+    // Default: local data (empty currentNode); only switch to remote if user selects
+    if (!currentNode && nodes.length > 0) {
+      currentNode = '';  // stay on local
     }
     renderNodeSelector();
     if (cb) cb();
@@ -224,19 +223,23 @@ function renderNodeSelector() {
   if (!sel) return;
   sel.innerHTML = '';
   if (nodesList.length === 0) {
-    // Hide selector in legacy mode
+    // No remote nodes — hide selector
     var wrap = sel.closest('.node-selector-wrap');
     if (wrap) wrap.style.display = 'none';
     return;
   }
   var wrap = sel.closest('.node-selector-wrap');
   if (wrap) wrap.style.display = '';
+  // Always add local option first
+  var localOpt = document.createElement('option');
+  localOpt.value = '';
+  localOpt.textContent = '📍 本机';
+  sel.appendChild(localOpt);
+  // Then remote nodes
   nodesList.forEach(function(n) {
     var o = document.createElement('option');
     o.value = n.node_id;
-    var statusIcon = '🔴';
-    if (n.status === 'local') statusIcon = '🔵';
-    else if (n.status === 'online') statusIcon = '🟢';
+    var statusIcon = n.status === 'online' ? '🟢' : '🔴';
     o.textContent = statusIcon + ' ' + (n.node_name || n.node_id);
     sel.appendChild(o);
   });
@@ -1477,7 +1480,7 @@ function loadNodeDiagData() {
   // 仅远程节点有此数据
   var section = $('#nodeDataSection');
   if (!section) return;
-  if (!currentNode || currentNode === 'local') {
+  if (!currentNode) {
     section.style.display = 'none';
     return;
   }

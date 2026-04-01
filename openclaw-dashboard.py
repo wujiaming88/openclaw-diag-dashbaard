@@ -3202,22 +3202,21 @@ class NodeStore(object):
             return self._nodes.get(node_id)
 
     def get_nodes_list(self):
-        """返回所有节点列表"""
+        """返回所有远程节点列表（不含本机）"""
         now = datetime.now(timezone.utc)
         result = []
         with self._global_lock:
             for nid, ndata in self._nodes.items():
                 node_type = ndata.get("node_type", "remote")
                 if node_type == "local":
-                    status = "local"
-                else:
-                    last_ts = ndata.get("last_report_at", "")
-                    try:
-                        last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
-                        elapsed = (now - last_dt).total_seconds()
-                        status = "online" if elapsed < NODE_TIMEOUT_SECONDS else "offline"
-                    except (ValueError, TypeError):
-                        status = "offline"
+                    continue  # 不列出本机
+                last_ts = ndata.get("last_report_at", "")
+                try:
+                    last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+                    elapsed = (now - last_dt).total_seconds()
+                    status = "online" if elapsed < NODE_TIMEOUT_SECONDS else "offline"
+                except (ValueError, TypeError):
+                    status = "offline"
                 result.append({
                     "node_id": nid,
                     "node_name": ndata.get("node_name", nid),
