@@ -1,4 +1,4 @@
-/* OpenClaw 诊断面板 v4.0.0 — 前端逻辑 (多节点支持) */
+/* ArkClaw 诊断面板 v4.0.0 — 前端逻辑 (多节点支持) */
 (function () {
 'use strict';
 
