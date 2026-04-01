@@ -333,7 +333,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OpenClaw Dashboard — 登录</title>
+<title>ArkClaw 诊断面板 — 登录</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -360,7 +360,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 <body>
 <div class="login-box">
   <div class="lock-icon">🔒</div>
-  <h1>OpenClaw Dashboard</h1>
+  <h1>ArkClaw 诊断面板</h1>
   <p>请输入 API Key 以访问诊断面板</p>
   %s
   <form method="POST" action="/login" autocomplete="off">
