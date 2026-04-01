@@ -28,7 +28,8 @@ function fmtMs(ms) {
   if (ms === 0 || ms === undefined || ms === null) return '0ms';
   if (ms < 1000) return ms + 'ms';
   if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
-  return (ms / 60000).toFixed(1) + 'm';
+  if (ms < 3600000) return (ms / 60000).toFixed(1) + 'min';
+  return (ms / 3600000).toFixed(1) + 'h';
 }
 
 function fmtTok(n) {
