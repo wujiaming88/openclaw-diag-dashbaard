@@ -616,6 +616,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                     "total_pages": 1,
                 },
                 "probes_available": [],
+                "events": payload.get("events_summary", {}),
+                "runs": {
+                    "runs": payload.get("runs", [])[:20],
+                    "total": len(payload.get("runs", [])),
+                    "page": 1,
+                    "per_page": 20,
+                    "total_pages": max(1, (len(payload.get("runs", [])) + 19) // 20),
+                },
+                "errors": {
+                    "errors": payload.get("errors", []),
+                    "total": len(payload.get("errors", [])),
+                },
             }
             self._send_json(result)
         elif endpoint == "summary":
@@ -690,6 +702,59 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             self._send_json(dates_list)
         elif endpoint == "mode":
             self._send_json({"mode": "standard", "debug_log_available": False, "session_files_available": True})
+        elif endpoint == "runs":
+            runs = payload.get("runs", [])
+            page = 1
+            per_page = 20
+            try:
+                page = int(params.get("page", ["1"])[0])
+            except (ValueError, IndexError):
+                pass
+            try:
+                per_page = int(params.get("per_page", ["20"])[0])
+            except (ValueError, IndexError):
+                pass
+            total = len(runs)
+            start = (page - 1) * per_page
+            end = start + per_page
+            self._send_json({
+                "runs": runs[start:end],
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": max(1, (total + per_page - 1) // per_page),
+            })
+        elif endpoint == "events":
+            self._send_json(payload.get("events_summary", {
+                "summary": {}, "message_stats": {}, "session_stats": {}, "model_usage": {}
+            }))
+        elif endpoint.startswith("run/"):
+            run_id = endpoint[4:]
+            runs = payload.get("runs", [])
+            found = None
+            for r in runs:
+                if r.get("run_id") == run_id:
+                    found = r
+                    break
+            if found:
+                # Build a basic run detail response
+                self._send_json({
+                    "run_id": found.get("run_id", ""),
+                    "start": found.get("start", ""),
+                    "end": found.get("end", ""),
+                    "duration_ms": found.get("duration_ms", 0),
+                    "model": found.get("model", ""),
+                    "channel": found.get("channel", ""),
+                    "tool_count": found.get("tool_count", 0),
+                    "token_output": found.get("token_output", 0),
+                    "status": found.get("status", "unknown"),
+                    "overall_tok_per_s": 0,
+                    "gantt": [],
+                    "infer_segments": [],
+                    "tools": [],
+                })
+            else:
+                self._send_json({"error": "Run not found: %s" % run_id}, 404)
         else:
             self._send_json({"error": "Unknown endpoint: %s" % endpoint}, 404)
 
