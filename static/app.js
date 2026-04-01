@@ -833,11 +833,10 @@ function renderRunList(data) {
   runs.forEach(function (r) {
     var durCls = speedClass(r.duration_ms);
     var short_id = r.run_id.substring(0, 8);
-    var virtualTag = r.virtual ? '<span class="virtual-tag">[虚拟]</span>' : '';
     html += '<tr class="clickable" data-runid="' + escHtml(r.run_id) + '" onclick="toggleRun(this)">';
     html += '<td class="mono">' + fmtTime(r.start) + '</td>';
     html += '<td class="mono">' + (r.end ? fmtTime(r.end) : '-') + '</td>';
-    html += '<td class="mono" title="' + escHtml(r.run_id) + '">' + virtualTag + escHtml(short_id) + '</td>';
+    html += '<td class="mono" title="' + escHtml(r.run_id) + '">' + escHtml(short_id) + '</td>';
     html += '<td>' + escHtml(shortModel(r.model)) + '</td>';
     html += '<td>' + escHtml(r.channel) + '</td>';
     html += '<td class="' + durCls + '">' + fmtMs(r.duration_ms) + '</td>';
