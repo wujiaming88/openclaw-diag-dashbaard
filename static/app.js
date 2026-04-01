@@ -744,13 +744,28 @@ function renderModelCallsList(data) {
       }
     }
     if (cs.tool_calls && cs.tool_calls.length > 0) {
-      html += '<div class="mc-content-block"><strong>🔧 工具调用:</strong><div style="margin-top:4px">';
-      cs.tool_calls.forEach(function (tc) {
-        html += '<div class="tool-item" style="display:block;margin:4px 0">' + escHtml(tc.name);
-        if (tc.args_summary) html += ': ' + escHtml(tc.args_summary);
-        // Render details
+      html += '<div class="mc-content-block"><strong>🔧 工具调用 (' + cs.tool_calls.length + '):</strong><div style="margin-top:6px">';
+      cs.tool_calls.forEach(function (tc, idx) {
+        html += '<div class="tool-call-card">';
+        html += '<div class="tool-call-header">';
+        html += '<span class="tool-call-name">' + escHtml(tc.name) + '</span>';
         var detailsHtml = renderToolDetails(tc.details, tc.name);
-        if (detailsHtml) html += ' ' + detailsHtml;
+        if (detailsHtml) html += detailsHtml;
+        html += '</div>';
+        if (tc.args_summary) {
+          html += '<div class="tool-call-args">' + escHtml(tc.args_summary) + '</div>';
+        }
+        if (tc.args_full) {
+          var afId = 'tc-af-' + i + '-' + idx;
+          var afStr = typeof tc.args_full === 'object' ? JSON.stringify(tc.args_full, null, 2) : String(tc.args_full);
+          if (afStr.length > 120) {
+            html += '<div class="tool-call-full"><a href="javascript:void(0)" onclick="toggleEl(\'' + afId + '\')" style="color:var(--accent);font-size:11px">📋 完整参数</a>';
+            html += '<div class="collapsible-content" id="' + afId + '"><pre style="max-height:200px;overflow:auto;font-size:11px;margin-top:4px">' + escHtml(afStr) + '</pre></div></div>';
+          }
+        }
+        if (tc.result_preview) {
+          html += '<div class="tool-call-result"><span style="color:var(--text2);font-size:11px">→ </span><span style="font-size:11px;color:var(--green)">' + escHtml(tc.result_preview) + '</span></div>';
+        }
         html += '</div>';
       });
       html += '</div></div>';
@@ -1034,12 +1049,20 @@ function renderRunDetail(d, el) {
         }
       }
       if (cs.tool_calls && cs.tool_calls.length > 0) {
-        html += '<div class="mc-content-block"><strong>🔧 工具调用:</strong><div style="margin-top:4px">';
-        cs.tool_calls.forEach(function (tc) {
-          html += '<div class="tool-item" style="display:block;margin:4px 0">' + escHtml(tc.name);
-          if (tc.args_summary) html += ': ' + escHtml(tc.args_summary);
+        html += '<div class="mc-content-block"><strong>🔧 工具调用 (' + cs.tool_calls.length + '):</strong><div style="margin-top:6px">';
+        cs.tool_calls.forEach(function (tc, tidx) {
+          html += '<div class="tool-call-card">';
+          html += '<div class="tool-call-header">';
+          html += '<span class="tool-call-name">' + escHtml(tc.name) + '</span>';
           var detailsHtml = renderToolDetails(tc.details, tc.name);
-          if (detailsHtml) html += ' ' + detailsHtml;
+          if (detailsHtml) html += detailsHtml;
+          html += '</div>';
+          if (tc.args_summary) {
+            html += '<div class="tool-call-args">' + escHtml(tc.args_summary) + '</div>';
+          }
+          if (tc.result_preview) {
+            html += '<div class="tool-call-result"><span style="color:var(--text2);font-size:11px">→ </span><span style="font-size:11px;color:var(--green)">' + escHtml(tc.result_preview) + '</span></div>';
+          }
           html += '</div>';
         });
         html += '</div></div>';

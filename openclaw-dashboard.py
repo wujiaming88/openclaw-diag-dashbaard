@@ -1405,8 +1405,15 @@ def parse_session_files(sessions_dirs):
         cs = mc.get("content_summary", {})
         for tc in cs.get("tool_calls", []):
             tc_id = tc.get("id", "")
-            if tc_id and tc_id in tool_results and not tc.get("details"):
-                tc["details"] = tool_results[tc_id].get("details", {})
+            if tc_id and tc_id in tool_results:
+                tr = tool_results[tc_id]
+                if not tc.get("details"):
+                    tc["details"] = tr.get("details", {})
+                # Add result_preview from toolResult content
+                if not tc.get("result_preview"):
+                    result_text = tr.get("text_preview", "")
+                    if result_text:
+                        tc["result_preview"] = result_text
 
     return tool_data, text_reply_usage, model_calls, tool_results, system_events, model_snapshots, all_messages
 

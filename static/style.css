@@ -191,6 +191,12 @@ tr.clickable:hover td{background:var(--hover)}
 .mc-detail pre{white-space:pre-wrap;word-break:break-all;color:var(--text2);margin:4px 0;max-height:150px;overflow-y:auto}
 .mc-detail .tool-list{margin:4px 0}
 .mc-detail .tool-item{display:inline-block;padding:2px 8px;margin:2px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;font-size:11px}
+.tool-call-card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin:4px 0;font-size:12px}
+.tool-call-header{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.tool-call-name{font-weight:700;color:var(--accent);font-size:13px;font-family:"SF Mono",Monaco,Consolas,monospace}
+.tool-call-args{color:var(--text2);font-size:11px;margin-top:4px;word-break:break-all;line-height:1.4}
+.tool-call-full{margin-top:4px}
+.tool-call-result{margin-top:4px;font-size:11px}
 
 /* 错误列表 */
 .errors-table{width:100%;border-collapse:collapse;font-size:13px}
