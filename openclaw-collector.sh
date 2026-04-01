@@ -1311,7 +1311,7 @@ except Exception as e:
 COLLECT_EOF
     local exit_code=$?
     # 首次上报成功后显示服务端分配的节点 ID
-    if [ -z "$_SHOWN_NODE_ID" ] && [ -f /tmp/.openclaw-collector-nodeid ]; then
+    if [ -z "${_SHOWN_NODE_ID:-}" ] && [ -f /tmp/.openclaw-collector-nodeid ]; then
         local nid
         nid=$(cat /tmp/.openclaw-collector-nodeid 2>/dev/null)
         if [ -n "$nid" ]; then
