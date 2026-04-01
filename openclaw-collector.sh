@@ -617,6 +617,7 @@ for d in sessions_dirs:
                             "isError": is_error,
                             "details": tr_details if isinstance(tr_details, dict) else {},
                             "toolName": msg.get("toolName", ""),
+                            "content_text": result_text[:200],
                         }
                     tr_ts = obj.get("timestamp", "")
                     if tr_ts:
@@ -666,7 +667,34 @@ for d in sessions_dirs:
                     if itype == "toolCall":
                         tc_id = item.get("id", "")
                         tc_name = item.get("name", "")
-                        tool_call_list.append({"name": tc_name, "id": tc_id})
+                        # 提取参数摘要
+                        tc_input = item.get("input", {})
+                        args_summary = ""
+                        if isinstance(tc_input, dict):
+                            if "command" in tc_input:
+                                args_summary = str(tc_input["command"])[:150]
+                            elif "file" in tc_input or "filePath" in tc_input or "path" in tc_input:
+                                args_summary = str(tc_input.get("file") or tc_input.get("filePath") or tc_input.get("path", ""))[:150]
+                            elif "query" in tc_input:
+                                args_summary = str(tc_input["query"])[:150]
+                            elif "task" in tc_input:
+                                args_summary = str(tc_input["task"])[:150]
+                            else:
+                                args_summary = str(tc_input)[:150]
+                        # 获取 toolResult 数据（如果已解析到）
+                        tr = tool_results.get(tc_id, {})
+                        tc_entry = {"name": tc_name, "id": tc_id, "args_summary": args_summary}
+                        if tr:
+                            tc_entry["details"] = tr.get("details", {})
+                            # 提取结果预览
+                            result_text = ""
+                            if tr.get("isError"):
+                                tc_entry["details"]["isError"] = True
+                            # result_preview 从 toolResult content 提取
+                            tr_content = tr.get("content_text", "")
+                            if tr_content:
+                                tc_entry["result_preview"] = tr_content[:200]
+                        tool_call_list.append(tc_entry)
                         tool_data[tc_id] = {"tool": tc_name, "timestamp": timestamp}
                     elif itype == "thinking":
                         has_thinking = True
