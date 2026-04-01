@@ -1340,32 +1340,44 @@ run_foreground() {
 show_node_info() {
     echo -e "${CYAN}上报目标: ${DASHBOARD_URL}${NC}"
     # 向服务端 ping 获取真实节点 ID（服务端看到的来源 IP）
-    local nid
-    nid=$(python3 -c "
+    local ping_result
+    ping_result=$(python3 -c "
 import json, sys
 try:
     from urllib.request import Request, urlopen
+    from urllib.error import URLError, HTTPError
 except ImportError:
-    from urllib2 import Request, urlopen
-url = '$DASHBOARD_URL' + '/api/ping'
+    from urllib2 import Request, urlopen, URLError, HTTPError
+url = '${DASHBOARD_URL}' + '/api/ping'
 req = Request(url)
-req.add_header('Authorization', 'Bearer ' + '$API_KEY')
+req.add_header('Authorization', 'Bearer ' + '${API_KEY}')
 try:
     resp = urlopen(req, timeout=5)
     data = json.loads(resp.read().decode('utf-8'))
-    print(data.get('node_id', ''))
-except:
-    pass
+    nid = data.get('node_id', '')
+    if nid:
+        print('OK:' + nid)
+    else:
+        print('ERR:empty node_id')
+except HTTPError as e:
+    print('ERR:HTTP ' + str(e.code))
+except URLError as e:
+    print('ERR:' + str(e.reason))
+except Exception as e:
+    print('ERR:' + str(e))
 " 2>/dev/null)
-    if [ -n "$nid" ]; then
+    if [[ "$ping_result" == OK:* ]]; then
+        local nid="${ping_result#OK:}"
         echo -e "${GREEN}节点 ID: ${BOLD}${nid}${NC}  (服务端分配)"
     else
-        # fallback: 本机 IP
+        # fallback: 本机 IP + 显示失败原因
         local ip
         ip=$(hostname -I 2>/dev/null | awk '{print $1}')
         [ -z "$ip" ] && ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null)
         [ -z "$ip" ] && ip="unknown"
-        echo -e "${CYAN}本机 IP: ${BOLD}${ip}${NC}  (服务端不可达，仅供参考)"
+        local reason="${ping_result#ERR:}"
+        [ -z "$reason" ] && reason="unknown"
+        echo -e "${CYAN}本机 IP: ${BOLD}${ip}${NC}  (ping失败: ${reason})"
     fi
 }
 
