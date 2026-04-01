@@ -1307,6 +1307,7 @@ function loadData() {
         fetchRuns(d, currentPage, perPage);
       }
       fetchModelCalls(d, mcPage, mcPerPage);
+      loadNodeDiagData();
       return;
     }
     renderSummary(data.summary);
@@ -1684,7 +1685,7 @@ function loadNodeDiagData() {
     return;
   }
   section.style.display = '';
-  var base = nodeApiPath('');
+  var base = '/api/node/' + encodeURIComponent(currentNode);
   api(base + '/env_vars', function (data) { renderEnvVars(data); });
   api(base + '/openclaw_config', function (data) { renderOpenclawConfig(data); });
   api(base + '/bash_history', function (data) { renderLogLines('bashHistoryBody', 'bashHistoryCount', data, '无命令历史'); });
