@@ -16,14 +16,9 @@ services:
       # Mount OpenClaw log directory (for advanced mode)
       - ${OC_LOG_DIR:-/tmp/openclaw}:/tmp/openclaw:ro
       # Mount OpenClaw session directory (for local diagnostics)
-      - ${OC_SESSIONS_DIR:-~/.openclaw/agents}:/root/.openclaw/agents:ro
-    entrypoint: >
-      python3 openclaw-dashboard.py
-        --no-browser
-        --port ${OC_DIAG_PORT:-9090}
-        --host 0.0.0.0
+      - ${OC_SESSIONS_DIR:-/root/.openclaw/agents}:/root/.openclaw/agents:ro
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${OC_DIAG_PORT:-9090}/api/mode')"]
+      test: ["CMD", "python3", "-c", "import os,urllib.request; urllib.request.urlopen('http://localhost:'+os.environ.get('OC_DIAG_PORT','9090')+'/api/mode')"]
       interval: 30s
       timeout: 5s
       start_period: 10s

@@ -15,7 +15,7 @@ PORT="9090"
 HOST="0.0.0.0"
 API_KEY=""
 ADVANCED=""
-EXTRA_ARGS=""
+ADVANCED=""
 
 # ======================== Colors ========================
 RED='\033[0;31m'
@@ -177,10 +177,14 @@ if [[ -f "${ENV_FILE}" ]]; then
     cp "${ENV_FILE}" "${ENV_FILE}.bak"
 fi
 
-# Build extra args
-EXTRA_ARGS="${ADVANCED}"
+# Build env vars for API key and advanced mode
+ENV_API_KEY=""
+ENV_ADVANCED=""
 if [[ -n "${API_KEY}" ]]; then
-    EXTRA_ARGS="${EXTRA_ARGS} --api-key ${API_KEY}"
+    ENV_API_KEY="${API_KEY}"
+fi
+if [[ -n "${ADVANCED}" ]]; then
+    ENV_ADVANCED="1"
 fi
 
 cat > "${ENV_FILE}" <<EOF
@@ -189,7 +193,8 @@ cat > "${ENV_FILE}" <<EOF
 
 OC_DIAG_PORT=${PORT}
 OC_DIAG_HOST=${HOST}
-OC_DIAG_EXTRA_ARGS=${EXTRA_ARGS}
+OC_DIAG_API_KEY=${ENV_API_KEY}
+OC_DIAG_ADVANCED=${ENV_ADVANCED}
 EOF
 
 chmod 600 "${ENV_FILE}"
@@ -208,11 +213,12 @@ Wants=network.target
 [Service]
 Type=simple
 EnvironmentFile=-${ENV_FILE}
-ExecStart=/usr/bin/python3 ${INSTALL_DIR}/openclaw-dashboard.py \\
-    --port \${OC_DIAG_PORT} \\
-    --host \${OC_DIAG_HOST} \\
+ExecStart=/bin/sh -c 'exec /usr/bin/python3 ${INSTALL_DIR}/openclaw-dashboard.py \\
+    --port \${OC_DIAG_PORT:-9090} \\
+    --host \${OC_DIAG_HOST:-0.0.0.0} \\
     --no-browser \\
-    \${OC_DIAG_EXTRA_ARGS}
+    \${OC_DIAG_API_KEY:+--api-key \$OC_DIAG_API_KEY} \\
+    \${OC_DIAG_ADVANCED:+--advanced}'
 Restart=on-failure
 RestartSec=5
 WatchdogSec=30
