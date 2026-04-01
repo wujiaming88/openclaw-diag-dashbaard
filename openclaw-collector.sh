@@ -903,202 +903,138 @@ summary = {
     "thinking_avg_ratio": round(thinking_ratio_sum / thinking_calls_count, 3) if thinking_calls_count > 0 else 0,
 }
 
-# ========== Parse debug log for runs, events timeline, errors ==========
+# ========== Build runs, events timeline, errors from session data ==========
 runs_list = []
 events_timeline = []
 errors_list = []
 
-log_today = os.path.join(log_dir, "openclaw-%s.log" % today)
-if os.path.isfile(log_today):
-    log_events = []  # (timestamp, level, msg, raw_obj)
-    try:
-        with open(log_today, 'r', encoding='utf-8', errors='replace') as lf:
-            for line in lf:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except:
-                    continue
-                t = obj.get("time", "")
-                meta = obj.get("_meta", {})
-                level = meta.get("logLevelName", "")
-                # Reconstruct message from numbered keys
-                parts = []
-                for i in range(5):
-                    v = obj.get(str(i), "")
-                    if isinstance(v, str) and v:
-                        parts.append(v)
-                msg = " ".join(parts)
-                log_events.append((t, level, msg, obj))
-    except:
-        pass
+# --- Build runs from model_calls grouped by session_id ---
+from collections import defaultdict, Counter
+calls_by_session = defaultdict(list)
+for mc in model_calls:
+    sid = mc.get("session_id", "")
+    if sid:
+        calls_by_session[sid].append(mc)
 
-    # --- Parse runs ---
-    runs_map = {}
-    for t, level, msg, obj in log_events:
-        run_id = None
-        if "runId=" in msg:
-            run_id = msg.split("runId=")[1].split(" ")[0].split("\n")[0]
-        if not run_id:
-            continue
-        if run_id not in runs_map:
-            runs_map[run_id] = {
-                "run_id": run_id, "agent": "", "session_key": "",
-                "start": None, "end": None, "model": "", "channel": "",
-                "tool_count": 0, "model_count": 0, "error_count": 0,
-                "duration_ms": 0, "infer_ms": 0, "tool_ms": 0,
-                "token_output": 0, "status": "unknown", "virtual": False,
-            }
-        r = runs_map[run_id]
+for sid, calls in calls_by_session.items():
+    calls_sorted = sorted(calls, key=lambda c: c.get("timestamp", ""))
+    if not calls_sorted:
+        continue
+    start_ts = calls_sorted[0].get("timestamp", "")
+    end_ts = calls_sorted[-1].get("timestamp", "")
+    # Calculate duration
+    dur_ms = 0
+    st = parse_time(start_ts)
+    et = parse_time(end_ts)
+    if st and et:
+        dur_ms = round((et - st).total_seconds() * 1000)
+    # Most common model
+    model_counts = Counter(c.get("model", "") for c in calls_sorted)
+    top_model = model_counts.most_common(1)[0][0] if model_counts else ""
+    # Agent from first call
+    agent = calls_sorted[0].get("agent", "")
+    # Aggregate stats
+    tc = sum(len(c.get("tool_calls", [])) for c in calls_sorted)
+    tok_out = sum(c.get("output_tokens", 0) or 0 for c in calls_sorted)
+    infer = sum(c.get("inference_ms", 0) or 0 for c in calls_sorted)
+    # Error count: stopReason with "error" or tool exitCode != 0
+    err_cnt = 0
+    for c in calls_sorted:
+        sr = str(c.get("stopReason", "")).lower()
+        if "error" in sr:
+            err_cnt += 1
+        for t in c.get("tool_calls", []):
+            ec = t.get("exitCode")
+            if ec is not None and ec != 0:
+                err_cnt += 1
+    status = "completed"
+    if err_cnt > 0:
+        status = "error"
+    runs_list.append({
+        "run_id": sid,
+        "agent": agent,
+        "session_key": sid,
+        "start": start_ts,
+        "end": end_ts,
+        "model": top_model,
+        "channel": "",
+        "tool_count": tc,
+        "model_count": len(calls_sorted),
+        "error_count": err_cnt,
+        "duration_ms": dur_ms,
+        "infer_ms": infer,
+        "tool_ms": 0,
+        "token_output": tok_out,
+        "status": status,
+        "virtual": True,
+    })
 
-        if "embedded run start:" in msg or "run start" in msg.lower():
-            r["start"] = t
-            if "model=" in msg:
-                r["model"] = msg.split("model=")[1].split(" ")[0]
-            if "messageChannel=" in msg:
-                r["channel"] = msg.split("messageChannel=")[1].split(" ")[0]
-            elif "channel=" in msg.lower():
-                r["channel"] = msg.lower().split("channel=")[1].split(" ")[0]
-            if "sessionKey=" in msg:
-                r["session_key"] = msg.split("sessionKey=")[1].split(" ")[0]
-            if "agent:" in (r.get("session_key") or ""):
-                parts_sk = r["session_key"].split(":")
-                if len(parts_sk) >= 2:
-                    r["agent"] = parts_sk[1]
+runs_list = sorted(runs_list, key=lambda x: x.get("start") or "", reverse=True)[:200]
 
-        elif "run agent end" in msg or "run end" in msg:
-            r["end"] = t
-            if "durationMs=" in msg:
-                try:
-                    r["duration_ms"] = int(msg.split("durationMs=")[1].split(" ")[0])
-                except:
-                    pass
-            r["status"] = "done"
-
-        elif "tool start" in msg:
-            r["tool_count"] += 1
-
-        elif "run agent start" in msg:
-            r["model_count"] += 1
-
-        if level == "ERROR":
-            r["error_count"] += 1
-
-    # Calculate duration from timestamps if not in log
-    for rid, r in runs_map.items():
-        if r["start"] and r["end"] and not r["duration_ms"]:
-            st = parse_time(r["start"])
-            et = parse_time(r["end"])
-            if st and et:
-                r["duration_ms"] = round((et - st).total_seconds() * 1000)
-        if not r["end"]:
-            r["status"] = "running"
-        elif r["error_count"] > 0:
-            r["status"] = "error"
-
-    runs_list = sorted(runs_map.values(), key=lambda x: x.get("start") or "", reverse=True)[:200]
-
-    # --- Parse events timeline ---
-    ev_count = 0
-    for t, level, msg, obj in log_events:
-        if ev_count >= 500:
-            break
-        event_type = None
-        detail = ""
-        session_key = ""
-        if "sessionKey=" in msg:
-            session_key = msg.split("sessionKey=")[1].split(" ")[0]
-
-        if "embedded run start:" in msg or ("run start" in msg.lower() and "runId=" in msg):
-            event_type = "RUN-START"
-            detail = msg[:200]
-        elif "run agent end" in msg or "run end" in msg:
-            event_type = "RUN-END"
-            detail = msg[:200]
-        elif "tool start" in msg:
-            event_type = "TOOL-START"
-            tool_name = msg.split("tool=")[1].split(" ")[0] if "tool=" in msg else ""
-            detail = "tool=%s" % tool_name
-        elif "tool end" in msg:
-            event_type = "TOOL-END"
-            tool_name = msg.split("tool=")[1].split(" ")[0] if "tool=" in msg else ""
-            detail = "tool=%s" % tool_name
-        elif "run agent start" in msg:
-            event_type = "MODEL-SEND"
-            detail = msg[:200]
-        elif "run agent end" in msg:
-            event_type = "MODEL-RECV"
-            detail = msg[:200]
-        elif level == "ERROR":
-            event_type = "ERROR"
-            detail = msg[:300]
-        elif "sendMessage" in msg:
-            event_type = "MESSAGE"
-            detail = msg[:200]
-
-        if event_type:
-            events_timeline.append({
-                "timestamp": t,
-                "type": event_type,
-                "detail": detail,
-                "session_key": session_key,
-            })
-            ev_count += 1
-
-    # --- Parse errors ---
-    err_count = 0
-    for t, level, msg, obj in log_events:
-        if err_count >= 200:
-            break
-        if level not in ("ERROR", "WARN"):
-            continue
-        meta = obj.get("_meta", {})
-        subsystem = obj.get("0", "")
-        if isinstance(subsystem, str) and len(subsystem) > 100:
-            subsystem = subsystem[:100]
-        source_file = ""
-        path_info = meta.get("path", {})
-        if isinstance(path_info, dict):
-            source_file = path_info.get("fileNameWithLine", "")
-
-        # Determine error type
-        error_type = "runtime"
-        if "[tools]" in msg:
-            error_type = "tool"
-        elif "gateway" in subsystem.lower() or "gateway" in msg.lower():
-            error_type = "gateway"
-        elif "[lcm]" in msg:
-            error_type = "lcm"
-
-        errors_list.append({
-            "time": t,
-            "severity": level.lower(),
-            "type": error_type,
-            "subsystem": subsystem,
-            "detail": msg[:500],
-            "source_file": source_file,
+# --- Build events timeline from model_calls ---
+for mc in model_calls:
+    ts = mc.get("timestamp", "")
+    agent = mc.get("agent", "")
+    model = mc.get("model", "")
+    sid = mc.get("session_id", "")
+    events_timeline.append({
+        "timestamp": ts,
+        "type": "MODEL-SEND",
+        "detail": "model=%s agent=%s" % (model, agent),
+        "session_key": sid,
+    })
+    for tc in mc.get("tool_calls", []):
+        tool_name = tc.get("name", tc.get("tool", "unknown"))
+        tool_ts = tc.get("timestamp", ts)
+        events_timeline.append({
+            "timestamp": tool_ts,
+            "type": "TOOL",
+            "detail": "tool=%s" % tool_name,
+            "session_key": sid,
         })
-        err_count += 1
 
-    # --- Build events summary for pipeline ---
-    _msg_queued = sum(1 for t, l, m, o in log_events if "inbound" in m.lower() or "message queued" in m.lower())
-    _msg_processed = sum(1 for t, l, m, o in log_events if "outbound" in m.lower() or "sendMessage" in m)
-    _queue_enq = sum(1 for t, l, m, o in log_events if "enqueue" in m.lower() or "queue" in m.lower())
-    _queue_deq = sum(1 for t, l, m, o in log_events if "dequeue" in m.lower())
-    _total_runs = len(runs_map)
-    _total_events = len(log_events)
-    _total_errors = len(errors_list)
+events_timeline = sorted(events_timeline, key=lambda x: x.get("timestamp", ""))[-500:]
+
+# --- Extract errors from model_calls ---
+for mc in model_calls:
+    ts = mc.get("timestamp", "")
+    agent = mc.get("agent", "")
+    sr = str(mc.get("stopReason", "")).lower()
+    if "error" in sr:
+        errors_list.append({
+            "time": ts,
+            "severity": "error",
+            "type": "model",
+            "subsystem": agent,
+            "detail": "Model call ended with stopReason: %s" % mc.get("stopReason", ""),
+            "source_file": "",
+        })
+    for tc in mc.get("tool_calls", []):
+        ec = tc.get("exitCode")
+        if ec is not None and ec != 0:
+            tool_name = tc.get("name", tc.get("tool", "unknown"))
+            errors_list.append({
+                "time": tc.get("timestamp", ts),
+                "severity": "warn" if ec == 1 else "error",
+                "type": "tool",
+                "subsystem": agent,
+                "detail": "Tool '%s' exited with code %s" % (tool_name, ec),
+                "source_file": "",
+            })
+
+errors_list = sorted(errors_list, key=lambda x: x.get("time", ""), reverse=True)[:200]
+
+# --- Build events summary ---
+_msg_total = sum(s.get("message_count", 0) for s in sessions_list)
 
 events_summary = {
     "summary": {
-        "messages_queued": _msg_queued if os.path.isfile(log_today) else 0,
-        "messages_processed": _msg_processed if os.path.isfile(log_today) else 0,
-        "queue_enqueues": _queue_enq if os.path.isfile(log_today) else 0,
-        "queue_dequeues": _queue_deq if os.path.isfile(log_today) else 0,
-        "runs": _total_runs if os.path.isfile(log_today) else 0,
-        "total_events": _total_events if os.path.isfile(log_today) else 0,
+        "messages_queued": _msg_total,
+        "messages_processed": _msg_total,
+        "queue_enqueues": 0,
+        "queue_dequeues": 0,
+        "runs": len(runs_list),
+        "total_events": len(events_timeline),
     },
     "message_stats": {
         "avg_process_time_ms": 0,
