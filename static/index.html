@@ -67,18 +67,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
   <div id="summaryCards3" class="cards"></div>
   <div id="summaryCards4" class="cards"></div>
 
-  <!-- 探测控制面板 -->
-  <div id="probesSection" class="section collapsible">
-    <div class="section-header" onclick="toggleSection(this)">
-      <h2>🔍 系统探测</h2>
-      <button class="probe-run-all-btn" onclick="event.stopPropagation(); runAllProbes()">▶ 全部执行</button>
-      <span class="toggle-icon">▼</span>
-    </div>
-    <div class="section-body open" id="probesBody">
-      <div id="probeCards" class="probe-cards"></div>
-      <div id="probeResults" class="probe-results"></div>
-    </div>
-  </div>
 
   <!-- 消息处理流水线 (需 debug 日志) -->
   <div id="pipelineSection" class="section collapsible" style="display:none">

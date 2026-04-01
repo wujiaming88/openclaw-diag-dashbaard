@@ -240,8 +240,6 @@ load_config() {
     fi
     DASHBOARD_URL=$(python3 -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('dashboard_url',''))" 2>/dev/null)
     API_KEY=$(python3 -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('api_key',''))" 2>/dev/null)
-    NODE_ID=$(python3 -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('node_id',''))" 2>/dev/null)
-    NODE_NAME=$(python3 -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('node_name',''))" 2>/dev/null)
     INTERVAL=$(python3 -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('interval_seconds',300))" 2>/dev/null)
     if [ -z "$DASHBOARD_URL" ] || [ -z "$API_KEY" ]; then
         return 1
@@ -255,8 +253,6 @@ import json
 config = {
     'dashboard_url': '$DASHBOARD_URL',
     'api_key': '$API_KEY',
-    'node_id': '$NODE_ID',
-    'node_name': '$NODE_NAME',
     'interval_seconds': $INTERVAL
 }
 with open('$CONFIG_FILE', 'w') as f:
@@ -319,10 +315,6 @@ interactive_config() {
     echo ""
 
     # 读取配置
-    local default_host
-    default_host=$(hostname -I 2>/dev/null | awk '{print $1}')
-    [ -z "$default_host" ] && default_host=$(hostname)
-
     read -rp "请输入 Dashboard 上报地址: " DASHBOARD_URL
     if [ -z "$DASHBOARD_URL" ]; then
         echo -e "${RED}错误: 上报地址不能为空${NC}"
@@ -334,11 +326,6 @@ interactive_config() {
         echo -e "${RED}错误: API Key 不能为空${NC}"
         exit 1
     fi
-
-    # 自动使用本机 IP 作为节点标识
-    NODE_ID="$default_host"
-    NODE_NAME="$default_host"
-    echo -e "  节点标识: ${CYAN}${NODE_ID}${NC} (本机 IP)"
 
     read -rp "请输入上报间隔(秒, 默认300): " INTERVAL
     INTERVAL=${INTERVAL:-300}

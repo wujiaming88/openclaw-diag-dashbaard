@@ -258,39 +258,8 @@ tr.clickable:hover td{background:var(--hover)}
 .locked-hint{font-size:12px;margin-top:6px;color:var(--text2)}
 .locked-hint code{background:var(--bg3);padding:2px 6px;border-radius:3px;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:11px;color:var(--accent)}
 
-/* 探测面板 */
-.probe-run-all-btn{padding:4px 14px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;margin-left:auto;margin-right:8px;transition:all .15s}
-.probe-run-all-btn:hover{background:var(--accent);color:#fff}
-.probe-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px}
-.probe-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center;transition:all .2s;position:relative;overflow:hidden}
-.probe-card .probe-icon{font-size:1.6em;margin-bottom:6px}
-.probe-card .probe-label{font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px}
-.probe-card .probe-desc{font-size:11px;color:var(--text2);margin-bottom:10px;line-height:1.4}
-.probe-card .probe-btn{padding:5px 16px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:12px;cursor:pointer;transition:all .15s}
-.probe-card .probe-btn:hover{border-color:var(--accent);color:var(--accent)}
-.probe-card .probe-btn:disabled{opacity:.5;cursor:not-allowed}
-.probe-card .probe-status{font-size:11px;margin-top:8px;color:var(--text2)}
-.probe-card.running{border-color:var(--accent);animation:probe-pulse 1.5s infinite}
-.probe-card.success{border-color:var(--green)}
-.probe-card.success .probe-status{color:var(--green)}
-.probe-card.error{border-color:var(--red)}
-.probe-card.error .probe-status{color:var(--red)}
-@keyframes probe-pulse{0%,100%{box-shadow:0 0 0 0 rgba(67,97,238,.3)}50%{box-shadow:0 0 12px 2px rgba(67,97,238,.4)}}
 
 /* 探测结果区 */
-.probe-results{margin-top:8px}
-.probe-result-item{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:10px;overflow:hidden}
-.probe-result-header{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;font-size:13px}
-.probe-result-header:hover{background:var(--hover)}
-.probe-result-header .result-icon{font-size:1.1em}
-.probe-result-header .result-label{font-weight:600;color:var(--text)}
-.probe-result-header .result-dur{color:var(--text2);font-size:12px;margin-left:auto}
-.probe-result-header .result-status{font-size:12px}
-.probe-result-header .result-status.ok{color:var(--green)}
-.probe-result-header .result-status.fail{color:var(--red)}
-.probe-result-body{display:none;padding:12px 14px;border-top:1px solid var(--border);font-size:12px}
-.probe-result-body.open{display:block}
-.probe-result-body pre{margin:0;white-space:pre-wrap;word-break:break-all;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:12px;background:var(--bg);padding:10px 12px;border-radius:6px;border:1px solid var(--border);color:var(--text2);line-height:1.6;max-height:400px;overflow-y:auto}
 
 .restart-current-info{padding:8px 14px;margin-bottom:12px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:13px;color:var(--text2)}
 .restart-current-info strong{color:var(--text)}

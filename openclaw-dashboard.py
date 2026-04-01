@@ -55,62 +55,6 @@ from urllib.parse import urlparse, parse_qs
 VERSION = "4.2.0"
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 
-# ============================================================
-# 探测命令定义
-# ============================================================
-
-PROBES = {
-    "health": {
-        "cmd": ["openclaw", "health", "--json"],
-        "timeout": 30,
-        "format": "json",
-        "label": "健康检查",
-        "description": "频道状态、Agent列表、Session统计",
-        "icon": "🏥",
-    },
-    "gateway_status": {
-        "cmd": ["openclaw", "gateway", "status", "--json"],
-        "timeout": 30,
-        "format": "json",
-        "label": "Gateway 状态",
-        "description": "服务状态、PID、端口、RPC探测",
-        "icon": "🌐",
-    },
-    "config_validate": {
-        "cmd": ["openclaw", "config", "validate"],
-        "timeout": 15,
-        "format": "text",
-        "label": "配置校验",
-        "description": "校验配置文件语法和结构",
-        "icon": "✅",
-    },
-    "doctor": {
-        "cmd": ["openclaw", "doctor", "--non-interactive"],
-        "timeout": 30,
-        "format": "text",
-        "label": "全面诊断",
-        "description": "配置审计、安全检查、技能状态、会话锁",
-        "icon": "🔬",
-    },
-    "update_status": {
-        "cmd": ["openclaw", "update", "status"],
-        "timeout": 30,
-        "format": "text",
-        "label": "版本状态",
-        "description": "当前版本、更新通道、可用更新",
-        "icon": "📦",
-    },
-    "models_status": {
-        "cmd": ["openclaw", "models", "status"],
-        "timeout": 30,
-        "format": "text",
-        "label": "模型状态",
-        "description": "已配置模型、默认模型、fallback 列表",
-        "icon": "🤖",
-    },
-}
-
-
 def strip_ansi(text):
     """去除 ANSI 转义码"""
     return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
@@ -136,77 +80,6 @@ def extract_json_block(text):
             return text[start:i + 1]
     return text[start:]
 
-
-def run_probe(probe_name):
-    """执行探测命令，返回结果字典"""
-    probe = PROBES.get(probe_name)
-    if not probe:
-        return {"ok": False, "error": "未知探测项: %s" % probe_name, "probe": probe_name}
-
-    t0 = time.time()
-    try:
-        result = subprocess.run(
-            probe["cmd"],
-            capture_output=True,
-            text=True,
-            timeout=probe["timeout"],
-        )
-        duration_ms = int((time.time() - t0) * 1000)
-
-        # 过滤 stderr 中的 [plugins] 行
-        stdout = result.stdout
-        stderr = "\n".join(
-            line for line in result.stderr.splitlines()
-            if not line.strip().startswith("[plugins]")
-        ).strip()
-
-        output = {}
-        if probe["format"] == "json":
-            json_str = extract_json_block(stdout)
-            try:
-                output["data"] = json.loads(json_str)
-            except (json.JSONDecodeError, ValueError):
-                output["raw"] = strip_ansi(stdout)
-        else:
-            output["raw"] = strip_ansi(stdout)
-
-        return {
-            "ok": result.returncode == 0,
-            "probe": probe_name,
-            "label": probe["label"],
-            "description": probe["description"],
-            "icon": probe.get("icon", ""),
-            "format": probe["format"],
-            "exit_code": result.returncode,
-            "duration_ms": duration_ms,
-            "output": output,
-            "stderr": stderr if stderr else None,
-            "timestamp": _utcnow_iso(),
-        }
-    except subprocess.TimeoutExpired:
-        duration_ms = int((time.time() - t0) * 1000)
-        return {
-            "ok": False,
-            "probe": probe_name,
-            "label": probe["label"],
-            "description": probe["description"],
-            "icon": probe.get("icon", ""),
-            "error": "命令超时 (%ds)" % probe["timeout"],
-            "duration_ms": duration_ms,
-            "timestamp": _utcnow_iso(),
-        }
-    except Exception as e:
-        duration_ms = int((time.time() - t0) * 1000)
-        return {
-            "ok": False,
-            "probe": probe_name,
-            "label": probe["label"],
-            "description": probe["description"],
-            "icon": probe.get("icon", ""),
-            "error": str(e),
-            "duration_ms": duration_ms,
-            "timestamp": _utcnow_iso(),
-        }
 
 
 # ============================================================
@@ -3715,23 +3588,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             return
 
         # 验证必填字段
-        node_id = data.get("node_id", "").strip()
-        if not node_id:
-            self._send_json({"error": "Missing node_id"}, 400)
-            return
-
-        node_name = data.get("node_name", node_id)
+        # 使用客户端 IP 作为唯一节点 key（忽略自报的 node_id）
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        node_id = client_ip
+        node_name = data.get("node_name", client_ip)
         payload = data.get("payload", {})
-
-        # 验证 node_token（防止节点冒名）
-        node_token = data.get("node_token", "")
-        if self.api_key and node_token:
-            expected = hmac.new(
-                self.api_key.encode(), ("openclaw-node:" + node_id).encode(), hashlib.sha256
-            ).hexdigest()
-            if not hmac.compare_digest(node_token, expected):
-                self._send_json({"error": "Invalid node_token"}, 403)
-                return
 
         if not isinstance(payload, dict):
             self._send_json({"error": "payload must be an object"}, 400)
@@ -3885,7 +3746,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 "summary": self.data_store.get_summary(date),
                 "restarts": self.data_store.get_restarts(date),
                 "model_calls": self.data_store.get_model_calls(date, mc_page, mc_per_page),
-                "probes_available": list(PROBES.keys()),
             }
             self._send_json(result)
         elif endpoint == "summary":
@@ -4096,40 +3956,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             return
 
         try:
-            if path == "/api/probe/all":
-                # 串行执行所有探测
-                results = {}
-                total_ms = 0
-                passed = 0
-                failed = 0
-                for name in PROBES:
-                    r = run_probe(name)
-                    results[name] = r
-                    total_ms += r.get("duration_ms", 0)
-                    if r.get("ok"):
-                        passed += 1
-                    else:
-                        failed += 1
-                self._send_json({
-                    "ok": failed == 0,
-                    "probes": results,
-                    "summary": {
-                        "total": len(PROBES),
-                        "passed": passed,
-                        "failed": failed,
-                        "total_duration_ms": total_ms,
-                    },
-                    "timestamp": _utcnow_iso(),
-                })
-            elif path.startswith("/api/probe/"):
-                probe_name = path[len("/api/probe/"):]
-                if probe_name not in PROBES:
-                    self._send_json({"error": "未知探测项: %s" % probe_name, "available": list(PROBES.keys())}, 404)
-                    return
-                result = run_probe(probe_name)
-                self._send_json(result)
-            else:
-                self._send_json({"error": "not found"}, 404)
+            self._send_json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except Exception as e:
@@ -4252,22 +4079,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             elif path == "/api/system_info":
                 info = get_system_info(self.data_store, self.config_path, self.config_data)
                 self._send_json(info)
-            elif path == "/api/probes":
-                # 列出所有可用探测项（仅当本地有 openclaw CLI 时）
-                import shutil
-                has_openclaw = shutil.which("openclaw") is not None
-                probes_list = []
-                if has_openclaw:
-                    for name, probe in PROBES.items():
-                        probes_list.append({
-                            "name": name,
-                            "label": probe["label"],
-                            "description": probe["description"],
-                            "icon": probe.get("icon", ""),
-                            "format": probe["format"],
-                            "timeout": probe["timeout"],
-                        })
-                self._send_json({"probes": probes_list, "openclaw_available": has_openclaw})
             elif path == "/api/dashboard":
                 # 批量接口: 一次返回 summary + events + runs，减少前端请求数
                 date = params.get("date", [""])[0]
@@ -4296,7 +4107,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                     "date": date,
                     "summary": self.data_store.get_summary(date),
                     "restarts": self.data_store.get_restarts(date),
-                    "probes_available": list(PROBES.keys()),
                 }
                 # 自动检测 debug 日志可用性，有就返回 events/runs
                 _has_debug = self.data_store.has_debug_logs(date)
@@ -4505,167 +4315,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 # 主程序
 # ============================================================
 
-def run_cli_mode(args):
-    """CLI 模式：不启动 web 服务器，直接在终端执行探测并输出结果"""
-    json_output = getattr(args, 'json', False)
-
-    # 确定要执行哪些探测
-    probe_name = getattr(args, 'probe', None)
-    if probe_name and probe_name != "all":
-        probe_names = [probe_name]
-    else:
-        probe_names = list(PROBES.keys())
-
-    if json_output:
-        # JSON 输出模式
-        results = {}
-        total_ms = 0
-        passed = 0
-        failed = 0
-        for name in probe_names:
-            r = run_probe(name)
-            results[name] = r
-            total_ms += r.get("duration_ms", 0)
-            if r.get("ok"):
-                passed += 1
-            else:
-                failed += 1
-        output = {
-            "version": VERSION,
-            "timestamp": _utcnow_iso(),
-            "probes": results,
-            "summary": {
-                "total": len(probe_names),
-                "passed": passed,
-                "failed": failed,
-                "total_duration_ms": total_ms,
-            },
-        }
-        print(json.dumps(output, ensure_ascii=False, indent=2))
-        sys.exit(0 if failed == 0 else 1)
-    else:
-        # 人类可读输出
-        print("")
-        print("\033[1m🦞 OpenClaw 诊断工具 v%s\033[0m" % VERSION)
-        print("━" * 40)
-        print("")
-
-        total_ms = 0
-        passed = 0
-        failed = 0
-
-        for name in probe_names:
-            probe = PROBES[name]
-            sys.stdout.write("%s %s ... " % (probe.get("icon", ""), probe["label"]))
-            sys.stdout.flush()
-            r = run_probe(name)
-            dur_s = r.get("duration_ms", 0) / 1000.0
-            total_ms += r.get("duration_ms", 0)
-
-            if r.get("ok"):
-                passed += 1
-                print("\033[32m✅ (%.1fs)\033[0m" % dur_s)
-            else:
-                failed += 1
-                err = r.get("error", "")
-                print("\033[31m❌ (%.1fs)\033[0m" % dur_s)
-                if err:
-                    print("  \033[31m错误: %s\033[0m" % err)
-
-            # 显示输出内容
-            output = r.get("output", {})
-            if output.get("data"):
-                data = output["data"]
-                # 为 JSON 格式提取关键信息
-                if name == "health":
-                    _print_health_summary(data)
-                elif name == "gateway_status":
-                    _print_gateway_summary(data)
-                else:
-                    print(json.dumps(data, ensure_ascii=False, indent=2))
-            elif output.get("raw"):
-                raw = output["raw"].strip()
-                if raw:
-                    for line in raw.split("\n"):
-                        print("  %s" % line)
-
-            if r.get("stderr"):
-                print("  \033[33m[stderr] %s\033[0m" % r["stderr"][:200])
-
-            print("")
-
-        # 总结
-        print("━" * 40)
-        total_s = total_ms / 1000.0
-        status_str = "\033[32m全部通过\033[0m" if failed == 0 else "\033[31m%d 项失败\033[0m" % failed
-        print("总耗时: %.1fs | %d 项探测 | %s" % (total_s, len(probe_names), status_str))
-        print("")
-        sys.exit(0 if failed == 0 else 1)
-
-
-def _print_health_summary(data):
-    """为 health 探测提取关键信息的可读输出"""
-    if not isinstance(data, dict):
-        print("  %s" % str(data)[:300])
-        return
-    # Agents
-    agents = data.get("agents", [])
-    if isinstance(agents, list) and agents:
-        agent_names = []
-        for a in agents:
-            if isinstance(a, dict):
-                agent_names.append(a.get("name", a.get("agentId", "?")))
-            elif isinstance(a, str):
-                agent_names.append(a)
-        print("  Agent: %d 个 (%s)" % (len(agent_names), ", ".join(agent_names[:10])))
-        # 每个 agent 的 session 数
-        for a in agents:
-            if isinstance(a, dict):
-                aid = a.get("agentId", a.get("id", a.get("name", "?")))
-                a_sessions = a.get("sessions", {})
-                if isinstance(a_sessions, dict):
-                    count = a_sessions.get("count", "?")
-                    print("    %s: %s sessions" % (aid, count))
-    # 全局 sessions
-    sessions = data.get("sessions", {})
-    if isinstance(sessions, dict):
-        total = sessions.get("count", "?")
-        print("  Session 总数: %s" % total)
-
-
-def _print_gateway_summary(data):
-    """为 gateway_status 探测提取关键信息的可读输出"""
-    if not isinstance(data, dict):
-        print("  %s" % str(data)[:300])
-        return
-    # service.runtime
-    service = data.get("service", {})
-    runtime = service.get("runtime", {}) if isinstance(service, dict) else {}
-    pid = runtime.get("pid", "?") if isinstance(runtime, dict) else "?"
-    state = runtime.get("state", "?") if isinstance(runtime, dict) else "?"
-    sub_state = runtime.get("subState", "") if isinstance(runtime, dict) else ""
-    state_str = "%s/%s" % (state, sub_state) if sub_state else state
-    # gateway
-    gw = data.get("gateway", {})
-    port = gw.get("port", "?") if isinstance(gw, dict) else "?"
-    bind_mode = gw.get("bindMode", "") if isinstance(gw, dict) else ""
-    # rpc
-    rpc = data.get("rpc", {})
-    rpc_ok = rpc.get("ok", False) if isinstance(rpc, dict) else False
-    rpc_str = "✅ 正常" if rpc_ok else "❌ 异常"
-    print("  PID: %s | 端口: %s (%s) | 状态: %s | RPC: %s" % (pid, port, bind_mode, state_str, rpc_str))
-    # config audit
-    config_audit = service.get("configAudit", {}) if isinstance(service, dict) else {}
-    if isinstance(config_audit, dict):
-        audit_ok = config_audit.get("ok", True)
-        issues = config_audit.get("issues", [])
-        if not audit_ok and issues:
-            print("  ⚠️ 配置问题: %s" % "; ".join(str(i) for i in issues[:3]))
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="OpenClaw 诊断面板 v%s — 零依赖 Web Dashboard + CLI 探测工具" % VERSION
+        description="OpenClaw 诊断面板 v%s — 零依赖 Web Dashboard" % VERSION
     )
     parser.add_argument("--port", type=int, default=9090, help="监听端口 (默认 9090)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="绑定地址 (默认 0.0.0.0)")
@@ -4675,18 +4329,7 @@ def main():
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--api-key", type=str, default="", help="上报认证密钥 (或环境变量 DIAG_API_KEY)")
     parser.add_argument("--no-local", action="store_true", help="不加载本地数据 (纯远程模式)")
-    parser.add_argument("--cli", action="store_true", help="CLI 模式（不启动 web 服务）")
-    parser.add_argument("--probe", choices=list(PROBES.keys()) + ["all"], default=None,
-                        help="CLI: 执行指定探测项 (默认 all)")
-    parser.add_argument("--json", action="store_true", help="CLI: JSON 格式输出")
     args = parser.parse_args()
-
-    # CLI 模式
-    if args.cli:
-        if args.probe is None:
-            args.probe = "all"
-        run_cli_mode(args)
-        return
 
     # 路径检测
     log_dir = detect_log_dir(args.log_dir)
