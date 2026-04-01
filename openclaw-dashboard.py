@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OpenClaw 诊断面板 v2.0
+OpenClaw 诊断面板 v4.0
 Python 后端 API 服务 + 静态文件服务
 前端文件位于 static/ 目录
+
+v4.0 新增: 采集端-Server 分离模式
+  - POST /api/report 接收远程节点上报
+  - GET /api/nodes 节点列表
+  - GET /api/node/<node_id>/* 按节点查询
+  - 节点超时检测 (30分钟)
+  - --api-key / --no-local 启动参数
 
 零外部依赖，只用 Python 标准库
 兼容 Python 3.6+
@@ -42,7 +49,7 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "3.0.0"
+VERSION = "4.0.0"
 ADVANCED_MODE = False  # 全局模式标志，由 main() 设置
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 
@@ -3355,6 +3362,108 @@ class DataStore(object):
 
 
 # ============================================================
+# 多节点存储
+# ============================================================
+
+NODE_TIMEOUT_SECONDS = 1800  # 30 分钟无上报标记为 offline
+
+
+class NodeStore(object):
+    """管理多节点数据（内存存储）"""
+
+    def __init__(self):
+        self._nodes = {}  # node_id -> {node_name, last_report_at, payload, node_type}
+        self._lock = threading.Lock()
+
+    def upsert(self, node_id, node_name, payload, node_type="remote"):
+        """新增或更新节点数据"""
+        with self._lock:
+            self._nodes[node_id] = {
+                "node_name": node_name,
+                "last_report_at": datetime.now(timezone.utc).isoformat(),
+                "payload": payload,
+                "node_type": node_type,
+            }
+
+    def get_node(self, node_id):
+        """获取节点数据，返回 None 如果不存在"""
+        with self._lock:
+            return self._nodes.get(node_id)
+
+    def get_nodes_list(self):
+        """返回所有节点列表"""
+        now = datetime.now(timezone.utc)
+        result = []
+        with self._lock:
+            for nid, ndata in self._nodes.items():
+                node_type = ndata.get("node_type", "remote")
+                if node_type == "local":
+                    status = "local"
+                else:
+                    last_ts = ndata.get("last_report_at", "")
+                    try:
+                        last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+                        elapsed = (now - last_dt).total_seconds()
+                        status = "online" if elapsed < NODE_TIMEOUT_SECONDS else "offline"
+                    except (ValueError, TypeError):
+                        status = "offline"
+                result.append({
+                    "node_id": nid,
+                    "node_name": ndata.get("node_name", nid),
+                    "last_report_at": ndata.get("last_report_at", ""),
+                    "status": status,
+                })
+        return result
+
+    def get_node_payload(self, node_id):
+        """获取节点 payload"""
+        with self._lock:
+            ndata = self._nodes.get(node_id)
+            if ndata:
+                return ndata.get("payload", {})
+            return None
+
+    def register_local(self, data_store):
+        """注册本地节点，从 DataStore 提取数据"""
+        # 获取当日日期
+        dates = data_store.get_dates()
+        if not dates:
+            # 即使没有日期数据，也注册 local 节点（空数据）
+            with self._lock:
+                self._nodes["local"] = {
+                    "node_name": socket.gethostname(),
+                    "last_report_at": datetime.now(timezone.utc).isoformat(),
+                    "payload": {},
+                    "node_type": "local",
+                }
+            return
+
+        date = dates[0]
+        payload = self._build_local_payload(data_store, date)
+        with self._lock:
+            self._nodes["local"] = {
+                "node_name": socket.gethostname(),
+                "last_report_at": datetime.now(timezone.utc).isoformat(),
+                "payload": payload,
+                "node_type": "local",
+            }
+
+    def _build_local_payload(self, data_store, date):
+        """从 DataStore 构建本地节点的 payload"""
+        # local 节点不需要缓存 payload —— 直接返回标记
+        # 实际数据由 DataStore 实时获取
+        return {"_local_marker": True, "_date": date}
+
+    def is_local(self, node_id):
+        """判断是否是本地节点"""
+        with self._lock:
+            ndata = self._nodes.get(node_id)
+            if ndata:
+                return ndata.get("node_type") == "local"
+        return False
+
+
+# ============================================================
 # HTTP 请求处理
 # ============================================================
 
@@ -3387,11 +3496,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP 请求处理器"""
 
     data_store = None
+    node_store = None
     access_token = None
+    api_key = None  # 上报认证密钥
     config_path = None
     config_data = None
     static_dir = None  # 静态文件目录
     advanced_mode = False  # 运行模式
+    no_local = False  # 纯远程模式
 
     def log_message(self, format, *args):
         pass
@@ -3403,6 +3515,244 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if tokens and tokens[0] == self.access_token:
             return True
         return False
+
+    def _handle_report(self):
+        """处理采集端上报请求"""
+        # 检查 API Key
+        if not self.api_key:
+            self._send_json({"error": "Report endpoint disabled (no API key configured)"}, 403)
+            return
+
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            self._send_json({"error": "Missing or invalid Authorization header"}, 401)
+            return
+
+        token = auth_header[7:].strip()
+        if token != self.api_key:
+            self._send_json({"error": "Invalid API key"}, 401)
+            return
+
+        # 读取请求体
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length > 10 * 1024 * 1024:  # 10MB 限制
+                self._send_json({"error": "Request body too large"}, 413)
+                return
+            body = self.rfile.read(content_length)
+            data = json.loads(body.decode("utf-8"))
+        except (ValueError, json.JSONDecodeError) as e:
+            self._send_json({"error": "Invalid JSON: %s" % str(e)}, 400)
+            return
+        except Exception as e:
+            self._send_json({"error": "Read error: %s" % str(e)}, 400)
+            return
+
+        # 验证必填字段
+        node_id = data.get("node_id", "").strip()
+        if not node_id:
+            self._send_json({"error": "Missing node_id"}, 400)
+            return
+
+        node_name = data.get("node_name", node_id)
+        payload = data.get("payload", {})
+
+        if not isinstance(payload, dict):
+            self._send_json({"error": "payload must be an object"}, 400)
+            return
+
+        # 存储数据
+        if self.node_store:
+            self.node_store.upsert(node_id, node_name, payload, node_type="remote")
+
+        self._send_json({
+            "ok": True,
+            "node_id": node_id,
+            "message": "Report received",
+            "timestamp": _utcnow_iso(),
+        })
+
+    def _handle_node_route(self, path, params):
+        """处理 /api/node/<node_id>/<endpoint> 路由"""
+        # 解析 node_id 和 endpoint
+        # path = /api/node/<node_id>/<endpoint>
+        rest = path[len("/api/node/"):]
+        if "/" not in rest:
+            # /api/node/<node_id> — 返回节点信息
+            node_id = rest
+            endpoint = ""
+        else:
+            node_id, endpoint = rest.split("/", 1)
+
+        if not node_id:
+            self._send_json({"error": "Missing node_id"}, 400)
+            return
+
+        if not self.node_store:
+            self._send_json({"error": "Node store not initialized"}, 500)
+            return
+
+        # 本地节点：直接用 DataStore
+        if self.node_store.is_local(node_id):
+            self._handle_local_node_route(node_id, endpoint, params)
+            return
+
+        # 远程节点：从 payload 返回数据
+        payload = self.node_store.get_node_payload(node_id)
+        if payload is None:
+            self._send_json({"error": "Node not found: %s" % node_id}, 404)
+            return
+
+        if not endpoint or endpoint == "dashboard":
+            # 返回完整 dashboard 数据
+            date = params.get("date", [""])[0]
+            result = {
+                "date": date,
+                "summary": payload.get("summary", {}),
+                "restarts": {"restarts": payload.get("restarts", []), "total": len(payload.get("restarts", [])), "current_pid": "", "current_since": ""},
+                "model_calls": {
+                    "date": date,
+                    "model_calls": payload.get("model_calls", []),
+                    "total": len(payload.get("model_calls", [])),
+                    "page": 1,
+                    "per_page": len(payload.get("model_calls", [])) or 50,
+                    "total_pages": 1,
+                },
+                "probes_available": [],
+            }
+            self._send_json(result)
+        elif endpoint == "summary":
+            self._send_json(payload.get("summary", {}))
+        elif endpoint == "model_calls":
+            mc = payload.get("model_calls", [])
+            page = 1
+            per_page = 50
+            try:
+                page = int(params.get("page", ["1"])[0])
+            except (ValueError, IndexError):
+                pass
+            try:
+                per_page = int(params.get("per_page", ["50"])[0])
+            except (ValueError, IndexError):
+                pass
+            total = len(mc)
+            start = (page - 1) * per_page
+            end = start + per_page
+            self._send_json({
+                "model_calls": mc[start:end],
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "total_pages": max(1, (total + per_page - 1) // per_page),
+            })
+        elif endpoint == "tool_stats":
+            self._send_json(payload.get("tool_stats", {}))
+        elif endpoint == "sessions":
+            self._send_json(payload.get("sessions", []))
+        elif endpoint == "restarts":
+            restarts = payload.get("restarts", [])
+            self._send_json({"restarts": restarts, "total": len(restarts), "current_pid": "", "current_since": ""})
+        elif endpoint == "thinking_stats":
+            self._send_json(payload.get("thinking_stats", {}))
+        elif endpoint == "system_events":
+            self._send_json(payload.get("system_events", []))
+        elif endpoint == "model_switches":
+            self._send_json(payload.get("model_switches", []))
+        elif endpoint == "dates":
+            # 远程节点返回 payload 中已有数据的日期
+            summary = payload.get("summary", {})
+            date_val = summary.get("date", "")
+            self._send_json([date_val] if date_val else [])
+        elif endpoint == "system_info":
+            # 远程节点没有系统信息
+            self._send_json({"hostname": node_id, "note": "Remote node — system info not available"})
+        elif endpoint == "mode":
+            self._send_json({"mode": "standard", "debug_log_available": False, "session_files_available": True})
+        else:
+            self._send_json({"error": "Unknown endpoint: %s" % endpoint}, 404)
+
+    def _handle_local_node_route(self, node_id, endpoint, params):
+        """本地节点路由 — 代理到 DataStore"""
+        if not endpoint or endpoint == "dashboard":
+            # 复用现有 /api/dashboard 逻辑
+            date = params.get("date", [""])[0]
+            if not date:
+                dates = self.data_store.get_dates()
+                date = dates[0] if dates else ""
+            if not date:
+                self._send_json({
+                    "date": "",
+                    "summary": {"total_runs": 0, "session_model_call_count": 0},
+                    "model_calls": {"date": "", "model_calls": [], "total": 0, "page": 1, "per_page": 50, "total_pages": 1},
+                })
+                return
+            mc_page = 1
+            mc_per_page = 50
+            try:
+                mc_page = int(params.get("mc_page", ["1"])[0])
+            except (ValueError, IndexError):
+                pass
+            try:
+                mc_per_page = int(params.get("mc_per_page", ["50"])[0])
+            except (ValueError, IndexError):
+                pass
+            result = {
+                "date": date,
+                "summary": self.data_store.get_summary(date, self.advanced_mode),
+                "restarts": self.data_store.get_restarts(date),
+                "model_calls": self.data_store.get_model_calls(date, mc_page, mc_per_page),
+                "probes_available": list(PROBES.keys()),
+            }
+            self._send_json(result)
+        elif endpoint == "summary":
+            date = params.get("date", [""])[0]
+            if not date:
+                dates = self.data_store.get_dates()
+                date = dates[0] if dates else ""
+            self._send_json(self.data_store.get_summary(date, self.advanced_mode) if date else {"total_runs": 0})
+        elif endpoint == "model_calls":
+            date = params.get("date", [""])[0]
+            if not date:
+                dates = self.data_store.get_dates()
+                date = dates[0] if dates else ""
+            page = int(params.get("page", ["1"])[0]) if params.get("page") else 1
+            per_page = int(params.get("per_page", ["50"])[0]) if params.get("per_page") else 50
+            self._send_json(self.data_store.get_model_calls(date, page, per_page))
+        elif endpoint == "tool_stats":
+            date = params.get("date", [""])[0]
+            if not date:
+                dates = self.data_store.get_dates()
+                date = dates[0] if dates else ""
+            self._send_json(self.data_store.get_tool_stats(date))
+        elif endpoint == "sessions":
+            date = params.get("date", [""])[0]
+            self._send_json(self.data_store.get_sessions_list(date))
+        elif endpoint == "restarts":
+            date = params.get("date", [""])[0] or None
+            self._send_json(self.data_store.get_restarts(date))
+        elif endpoint == "dates":
+            self._send_json(self.data_store.get_dates())
+        elif endpoint == "system_info":
+            info = get_system_info(self.data_store, self.config_path, self.config_data)
+            self._send_json(info)
+        elif endpoint == "mode":
+            log_dir = self.data_store.log_dir
+            debug_log_available = os.path.isdir(log_dir) and len(glob.glob(os.path.join(log_dir, "openclaw-*.log"))) > 0
+            session_files_available = False
+            for d in self.data_store.sessions_dirs:
+                for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
+                    if len(glob.glob(os.path.join(d, _ep))) > 0:
+                        session_files_available = True
+                        break
+                if session_files_available:
+                    break
+            self._send_json({
+                "mode": "advanced" if self.advanced_mode else "standard",
+                "debug_log_available": debug_log_available,
+                "session_files_available": session_files_available,
+            })
+        else:
+            self._send_json({"error": "Unknown endpoint: %s" % endpoint}, 404)
 
     # 静态文件缓存: filepath -> (mtime, body_bytes, etag, gzip_bytes)
     _static_cache = {}
@@ -3513,10 +3863,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        """处理 POST 请求 — 探测命令"""
+        """处理 POST 请求 — 探测命令 + 上报接收"""
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
+
+        # === POST /api/report — 采集端上报 ===
+        if path == "/api/report":
+            self._handle_report()
+            return
 
         if not self._check_token(params):
             self._send_json({"error": "Unauthorized"}, 403)
@@ -3588,6 +3943,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 filepath = os.path.join(self.static_dir, rel)
                 self._send_file(filepath)
             # API 路由
+            elif path == "/api/nodes":
+                # 返回所有节点列表
+                if self.node_store:
+                    nodes = self.node_store.get_nodes_list()
+                    self._send_json(nodes)
+                else:
+                    self._send_json([])
+            elif path.startswith("/api/node/"):
+                # 节点专属路由: /api/node/<node_id>/<endpoint>
+                self._handle_node_route(path, params)
             elif path == "/api/dates":
                 dates = self.data_store.get_dates()
                 self._send_json(dates)
@@ -4051,6 +4416,8 @@ def main():
     parser.add_argument("--token", type=str, default="", help="访问令牌 (可选)")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--advanced", action="store_true", help="启用高级诊断模式 (需要 debug 日志)")
+    parser.add_argument("--api-key", type=str, default="", help="上报认证密钥 (或环境变量 DIAG_API_KEY)")
+    parser.add_argument("--no-local", action="store_true", help="不加载本地数据 (纯远程模式)")
     parser.add_argument("--cli", action="store_true", help="CLI 模式（不启动 web 服务）")
     parser.add_argument("--probe", choices=list(PROBES.keys()) + ["all"], default=None,
                         help="CLI: 执行指定探测项 (默认 all)")
@@ -4131,12 +4498,28 @@ def main():
 
     # 初始化数据存储
     store = DataStore(log_dir, sessions_dirs)
-    store.start_preload()  # 后台预加载 session 数据
+    if not args.no_local:
+        store.start_preload()  # 后台预加载 session 数据
+
+    # 初始化节点存储
+    node_store = NodeStore()
+    if not args.no_local:
+        # 注册本地节点
+        def _register_local():
+            node_store.register_local(store)
+        threading.Thread(target=_register_local, daemon=True).start()
+
+    # API Key
+    api_key = args.api_key or os.environ.get("DIAG_API_KEY", "")
+
     DashboardHandler.data_store = store
+    DashboardHandler.node_store = node_store
     DashboardHandler.access_token = args.token if args.token else None
+    DashboardHandler.api_key = api_key if api_key else None
     DashboardHandler.config_path = config_path
     DashboardHandler.config_data = config_data
     DashboardHandler.advanced_mode = ADVANCED_MODE
+    DashboardHandler.no_local = args.no_local
     # 静态文件目录: 脚本同级的 static/ 文件夹
     script_dir = os.path.dirname(os.path.abspath(__file__))
     static_dir = os.path.join(script_dir, "static")
@@ -4188,6 +4571,12 @@ def main():
 
     print("")
     print("Dashboard: %s" % url)
+    if api_key:
+        print("上报密钥: 已配置 (POST /api/report 已启用)")
+    else:
+        print("上报密钥: 未配置 (POST /api/report 已禁用)")
+    if args.no_local:
+        print("本地数据: 已禁用 (--no-local)")
     print("按 Ctrl+C 退出")
     print("━" * 35)
 

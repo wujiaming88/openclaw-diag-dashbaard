@@ -1,4 +1,4 @@
-/* OpenClaw 诊断面板 v3.0.0 — 前端逻辑 */
+/* OpenClaw 诊断面板 v4.0.0 — 前端逻辑 (多节点支持) */
 (function () {
 'use strict';
 
@@ -6,6 +6,8 @@
 // 状态
 // ============================================================
 var currentDate = '';
+var currentNode = '';  // '' = legacy mode (no node), 'local' = local, 'xxx' = remote
+var nodesList = [];    // [{node_id, node_name, last_report_at, status}]
 var autoTimer = null;
 var autoInterval = 30000;
 var openRuns = {};
@@ -158,6 +160,18 @@ function isAdvanced() { return dashboardMode === 'advanced'; }
 // ============================================================
 // API 请求
 // ============================================================
+function nodeApiPath(path) {
+  // 如果选中了节点，将 /api/xxx 路由改为 /api/node/<node_id>/xxx
+  if (currentNode) {
+    // 把 /api/xxx 变成 /api/node/<node_id>/xxx
+    if (path.startsWith('/api/')) {
+      var rest = path.substring(5);  // 去掉 /api/
+      return '/api/node/' + encodeURIComponent(currentNode) + '/' + rest;
+    }
+  }
+  return path;
+}
+
 function api(path, cb) {
   var x = new XMLHttpRequest();
   x.open('GET', path);
@@ -172,7 +186,8 @@ function api(path, cb) {
 }
 
 function fetchMode(cb) {
-  api('/api/mode', function (data) {
+  var path = currentNode ? nodeApiPath('/api/mode') : '/api/mode';
+  api(path, function (data) {
     if (data && data.mode) {
       dashboardMode = data.mode;
     }
@@ -181,14 +196,61 @@ function fetchMode(cb) {
   });
 }
 
+function fetchNodes(cb) {
+  api('/api/nodes', function (nodes) {
+    if (!nodes || !Array.isArray(nodes) || nodes.length === 0) {
+      // No nodes = legacy single-node mode
+      nodesList = [];
+      currentNode = '';
+      renderNodeSelector();
+      if (cb) cb();
+      return;
+    }
+    nodesList = nodes;
+    // Default: select 'local' if present, otherwise first
+    if (!currentNode) {
+      var local = nodes.find(function(n) { return n.node_id === 'local'; });
+      currentNode = local ? 'local' : nodes[0].node_id;
+    }
+    renderNodeSelector();
+    if (cb) cb();
+  });
+}
+
+function renderNodeSelector() {
+  var sel = $('#nodeSelect');
+  if (!sel) return;
+  sel.innerHTML = '';
+  if (nodesList.length === 0) {
+    // Hide selector in legacy mode
+    var wrap = sel.closest('.node-selector-wrap');
+    if (wrap) wrap.style.display = 'none';
+    return;
+  }
+  var wrap = sel.closest('.node-selector-wrap');
+  if (wrap) wrap.style.display = '';
+  nodesList.forEach(function(n) {
+    var o = document.createElement('option');
+    o.value = n.node_id;
+    var statusIcon = '🔴';
+    if (n.status === 'local') statusIcon = '🔵';
+    else if (n.status === 'online') statusIcon = '🟢';
+    o.textContent = statusIcon + ' ' + (n.node_name || n.node_id);
+    sel.appendChild(o);
+  });
+  sel.value = currentNode;
+}
+
 function fetchSystemInfo() {
-  api('/api/system_info', function (info) {
+  var path = currentNode ? nodeApiPath('/api/system_info') : '/api/system_info';
+  api(path, function (info) {
     renderSystemInfo(info);
   });
 }
 
 function fetchDates() {
-  api('/api/dates', function (dates) {
+  var path = currentNode ? nodeApiPath('/api/dates') : '/api/dates';
+  api(path, function (dates) {
     var sel = $('#dateSelect');
     sel.innerHTML = '';
     if (!dates || dates.length === 0) {
@@ -208,7 +270,8 @@ function fetchDates() {
 }
 
 function fetchSummary(date) {
-  api('/api/summary?date=' + date, function (summary) {
+  var path = currentNode ? nodeApiPath('/api/summary') : '/api/summary';
+  api(path + '?date=' + date, function (summary) {
     var skeleton = $('#skeletonCards');
     if (skeleton) skeleton.style.display = 'none';
     renderSummary(summary);
@@ -216,28 +279,32 @@ function fetchSummary(date) {
 }
 
 function fetchEventsSummary(date) {
-  api('/api/events?date=' + date, function (data) {
+  var path = currentNode ? nodeApiPath('/api/events') : '/api/events';
+  api(path + '?date=' + date, function (data) {
     renderEventsSummary(data);
     renderPipeline(data);
   });
 }
 
 function fetchRuns(date, page, pp) {
-  api('/api/runs?date=' + date + '&page=' + page + '&per_page=' + pp, function (data) {
+  var path = currentNode ? nodeApiPath('/api/runs') : '/api/runs';
+  api(path + '?date=' + date + '&page=' + page + '&per_page=' + pp, function (data) {
     renderRunList(data);
   });
 }
 
 function fetchRunDetail(rid, el) {
   el.innerHTML = '<div class="loading"><span class="spinner"></span>加载详情...</div>';
-  api('/api/run/' + rid + '?date=' + currentDate, function (d) {
+  var path = currentNode ? nodeApiPath('/api/run/' + rid) : '/api/run/' + rid;
+  api(path + '?date=' + currentDate, function (d) {
     if (!d) { el.innerHTML = '<p>加载失败</p>'; return; }
     renderRunDetail(d, el);
   });
 }
 
 function fetchModelCalls(date, page, pp) {
-  api('/api/model_calls?date=' + date + '&page=' + page + '&per_page=' + pp, function (data) {
+  var path = currentNode ? nodeApiPath('/api/model_calls') : '/api/model_calls';
+  api(path + '?date=' + date + '&page=' + page + '&per_page=' + pp, function (data) {
     renderModelCallsList(data);
   });
 }
@@ -1089,7 +1156,8 @@ window.toggleConversationSection = function (el) {
 
 function loadSessionsList() {
   var date = currentDate;
-  api('/api/sessions?date=' + (date || ''), function (sessions) {
+  var path = currentNode ? nodeApiPath('/api/sessions') : '/api/sessions';
+  api(path + '?date=' + (date || ''), function (sessions) {
     var sel = $('#sessionSelect');
     if (!sel) return;
     sel.innerHTML = '<option value="">选择会话...</option>';
@@ -1123,7 +1191,8 @@ window.loadConversationTree = function () {
     return;
   }
   tree.innerHTML = '<div class="loading"><span class="spinner"></span>加载会话...</div>';
-  api('/api/conversation_tree?session_id=' + encodeURIComponent(sid) + '&date=' + (currentDate || ''), function (messages) {
+  var convPath = currentNode ? nodeApiPath('/api/conversation_tree') : '/api/conversation_tree';
+  api(convPath + '?session_id=' + encodeURIComponent(sid) + '&date=' + (currentDate || ''), function (messages) {
     if (!messages || messages.length === 0) {
       tree.innerHTML = '<div class="empty" style="padding:24px"><div class="icon">📭</div><p>暂无消息</p></div>';
       return;
@@ -1227,7 +1296,8 @@ function loadData() {
   renderLockedSections();
   conversationLoaded = false;
   var d = currentDate;
-  api('/api/dashboard?date=' + d + '&page=' + currentPage + '&per_page=' + perPage + '&mc_page=' + mcPage + '&mc_per_page=' + mcPerPage, function (data) {
+  var dashPath = currentNode ? nodeApiPath('/api/dashboard') : '/api/dashboard';
+  api(dashPath + '?date=' + d + '&page=' + currentPage + '&per_page=' + perPage + '&mc_page=' + mcPage + '&mc_per_page=' + mcPerPage, function (data) {
     var skeleton = $('#skeletonCards');
     if (skeleton) skeleton.style.display = 'none';
     if (!data) {
@@ -1360,6 +1430,7 @@ var probesList = [];
 var probeResults = {};
 
 function fetchProbes() {
+  // Probes only available for local mode (not node-scoped)
   api('/api/probes', function (data) {
     if (data && data.probes) {
       probesList = data.probes;
@@ -1506,15 +1577,31 @@ $('#dateSelect').addEventListener('change', function () {
   loadData();
 });
 
+$('#nodeSelect').addEventListener('change', function () {
+  currentNode = this.value;
+  currentPage = 1;
+  mcPage = 1;
+  openRuns = {};
+  conversationLoaded = false;
+  // Reload everything for new node
+  fetchMode(function () {
+    fetchSystemInfo();
+    fetchDates();
+  });
+});
+
 $('#autoRefreshSelect').addEventListener('change', function () {
   initAutoRefresh(parseInt(this.value) || 0);
 });
 
-fetchMode(function () {
-  fetchSystemInfo();
-  fetchProbes();
-  fetchDates();
-  initAutoRefresh(autoInterval);
+// Initial load: fetch nodes first, then mode/dates
+fetchNodes(function () {
+  fetchMode(function () {
+    fetchSystemInfo();
+    fetchProbes();
+    fetchDates();
+    initAutoRefresh(autoInterval);
+  });
 });
 
 })();

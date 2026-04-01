@@ -1,4 +1,4 @@
-/* OpenClaw 诊断面板 v3.0.0 — 深色主题 */
+/* OpenClaw 诊断面板 v4.0.0 — 深色主题 */
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
   --bg:#1a1a2e;--bg2:#16213e;--bg3:#0f3460;
@@ -357,3 +357,8 @@ tr.clickable:hover td{background:var(--hover)}
 .src-session{background:rgba(46,160,67,0.15);color:#2ea043}
 .src-log{background:rgba(201,144,38,0.15);color:#c9902a}
 .virtual-tag{color:#9370DB;font-size:0.8em;margin-right:4px}
+
+/* === v4.0.0: 节点选择器 === */
+.node-selector-wrap{display:inline-flex;align-items:center}
+.node-selector-wrap select{padding:6px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--bg2);color:var(--text);font-size:14px;cursor:pointer;font-weight:500;min-width:120px}
+.node-selector-wrap select:hover{border-color:var(--blue)}
