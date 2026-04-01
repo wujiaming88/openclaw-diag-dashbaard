@@ -719,7 +719,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             start = (page - 1) * per_page
             end = start + per_page
             self._send_json({
-                "runs": runs[start:end],
+                "runs": [{k: v for k, v in r.items() if k != "model_calls"} for r in runs[start:end]],
                 "total": total,
                 "page": page,
                 "per_page": per_page,
@@ -738,7 +738,49 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                     found = r
                     break
             if found:
-                # Build a basic run detail response
+                # Build detail from run's embedded model_calls
+                run_mcs = found.get("model_calls", [])
+                dur = found.get("duration_ms", 0) or 1
+                # Gantt bars + infer_segments from model_calls
+                gantt = []
+                infer_segments = []
+                tools_list = []
+                run_start = found.get("start", "")
+                for mc in run_mcs:
+                    mc_ts = mc.get("timestamp", "")
+                    inf_ms = mc.get("inference_ms", 0) or 0
+                    # offset from run start
+                    offset_ms = 0
+                    try:
+                        from datetime import datetime
+                        fmt = "%Y-%m-%dT%H:%M:%S"
+                        s = run_start[:19] if run_start else ""
+                        m = mc_ts[:19] if mc_ts else ""
+                        if s and m:
+                            offset_ms = max(0, int((datetime.fromisoformat(m) - datetime.fromisoformat(s)).total_seconds() * 1000))
+                    except Exception:
+                        pass
+                    offset_pct = round(offset_ms / dur * 100, 2) if dur > 0 else 0
+                    width_pct = round(inf_ms / dur * 100, 2) if dur > 0 else 0
+                    if inf_ms > 0:
+                        gantt.append({"type": "infer", "offset_pct": offset_pct, "width_pct": width_pct,
+                                      "duration_ms": inf_ms, "label": mc.get("model", "")})
+                        tps = mc.get("tokens_per_sec", 0) or 0
+                        infer_segments.append({
+                            "label": mc.get("model", ""), "duration_ms": inf_ms,
+                            "output_tokens": mc.get("output_tokens", 0) or 0,
+                            "tokens_per_sec": round(tps, 1),
+                        })
+                    # Tool calls from this mc
+                    for tc in mc.get("tool_calls", []):
+                        t_dur = tc.get("durationMs", 0) or 0
+                        t_offset_pct = round((offset_ms + inf_ms) / dur * 100, 2) if dur > 0 else 0
+                        t_width_pct = round(t_dur / dur * 100, 2) if dur > 0 else 0
+                        gantt.append({"type": "tool", "offset_pct": t_offset_pct, "width_pct": t_width_pct,
+                                      "duration_ms": t_dur, "label": tc.get("name", "tool")})
+                        tools_list.append(tc)
+                total_tps_items = [s["tokens_per_sec"] for s in infer_segments if s["tokens_per_sec"] > 0]
+                overall_tps = round(sum(total_tps_items) / len(total_tps_items), 1) if total_tps_items else 0
                 self._send_json({
                     "run_id": found.get("run_id", ""),
                     "start": found.get("start", ""),
@@ -746,13 +788,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                     "duration_ms": found.get("duration_ms", 0),
                     "model": found.get("model", ""),
                     "channel": found.get("channel", ""),
+                    "agent": found.get("agent", ""),
                     "tool_count": found.get("tool_count", 0),
+                    "model_count": found.get("model_count", 0),
+                    "infer_ms": found.get("infer_ms", 0),
+                    "tool_ms": found.get("tool_ms", 0),
                     "token_output": found.get("token_output", 0),
+                    "error_count": found.get("error_count", 0),
                     "status": found.get("status", "unknown"),
-                    "overall_tok_per_s": 0,
-                    "gantt": [],
-                    "infer_segments": [],
-                    "tools": [],
+                    "overall_tok_per_s": overall_tps,
+                    "gantt": gantt,
+                    "infer_segments": infer_segments,
+                    "tools": tools_list,
                 })
             else:
                 self._send_json({"error": "Run not found: %s" % run_id}, 404)

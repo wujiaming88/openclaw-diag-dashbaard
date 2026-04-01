@@ -967,6 +967,7 @@ for sid, calls in calls_by_session.items():
         "token_output": tok_out,
         "status": status,
         "virtual": True,
+        "model_calls": calls_sorted[:50],
     })
 
 runs_list = sorted(runs_list, key=lambda x: x.get("start") or "", reverse=True)[:200]
