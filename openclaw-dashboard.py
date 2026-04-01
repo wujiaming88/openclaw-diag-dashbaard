@@ -1869,14 +1869,9 @@ class DataStore(object):
         cached = self._debug_log_cache.get(date)
         if cached and (_time.monotonic() - cached[0]) < self._DEBUG_LOG_CACHE_TTL:
             return cached[1]
-        # 检查日志文件是否存在且有 runs 数据
+        # 检查日志文件是否存在且非空即可（刚开启 debug 时可能还没产生 Run 事件）
         filepath = os.path.join(self.log_dir, "openclaw-%s.log" % date)
-        result = os.path.isfile(filepath)
-        if result:
-            # 进一步验证: 尝试加载 runs
-            runs = self._load_runs(date)
-            # 只有非虚拟 runs 才算有 debug 日志
-            result = any(not r.get("virtual") for r in runs.values()) if runs else False
+        result = os.path.isfile(filepath) and os.path.getsize(filepath) > 0
         self._debug_log_cache[date] = (_time.monotonic(), result)
         return result
 
