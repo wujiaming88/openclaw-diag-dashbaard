@@ -320,7 +320,8 @@ interactive_config() {
 
     # 读取配置
     local default_host
-    default_host=$(hostname)
+    default_host=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$default_host" ] && default_host=$(hostname)
 
     read -rp "请输入 Dashboard 上报地址: " DASHBOARD_URL
     if [ -z "$DASHBOARD_URL" ]; then
@@ -334,11 +335,10 @@ interactive_config() {
         exit 1
     fi
 
-    read -rp "请输入节点ID (默认: $default_host): " NODE_ID
-    NODE_ID=${NODE_ID:-$default_host}
-
-    read -rp "请输入节点名称 (默认: $default_host): " NODE_NAME
-    NODE_NAME=${NODE_NAME:-$default_host}
+    # 自动使用本机 IP 作为节点标识
+    NODE_ID="$default_host"
+    NODE_NAME="$default_host"
+    echo -e "  节点标识: ${CYAN}${NODE_ID}${NC} (本机 IP)"
 
     read -rp "请输入上报间隔(秒, 默认300): " INTERVAL
     INTERVAL=${INTERVAL:-300}
