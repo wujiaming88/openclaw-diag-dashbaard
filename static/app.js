@@ -1205,8 +1205,9 @@ window.loadConversationTree = function () {
       }
 
       // Full content (hidden by default)
-      if (m.full_text) {
-        html += '<div class="conv-message-full" id="conv-full-' + idx + '">' + escHtml(m.full_text) + '</div>';
+      var fullContent = m.full_text || m.preview || '';
+      if (fullContent) {
+        html += '<div class="conv-message-full" id="conv-full-' + idx + '">' + escHtml(fullContent) + '</div>';
       }
 
       html += '</div></div>';
