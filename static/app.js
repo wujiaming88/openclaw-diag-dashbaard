@@ -683,7 +683,7 @@ function renderModelCallsList(data) {
   mcPage = page;
 
   var html = '<div class="model-calls-scroll"><table class="model-calls-table"><thead><tr>';
-  html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>tok/s</th><th>输入</th><th>输出</th><th>缓存</th><th>💭</th><th>停止原因</th><th></th>';
+  html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>tok/s</th><th>输入</th><th>输出</th><th>缓存</th><th>思考</th><th>停止原因</th><th></th>';
   html += '</tr></thead><tbody>';
 
   calls.forEach(function (mc, idx) {
