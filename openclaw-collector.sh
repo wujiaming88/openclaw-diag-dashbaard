@@ -72,6 +72,35 @@ interactive_config() {
     detect_data
     echo ""
 
+    # 数据授权声明
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}📋 数据上报授权声明${NC}"
+    echo ""
+    echo "  本工具将采集以上列出的 OpenClaw 诊断数据，并通过 HTTP"
+    echo "  上报到您指定的 Dashboard Server。"
+    echo ""
+    echo "  上报数据包括："
+    echo "    • 模型调用统计（调用次数、推理耗时、Token 用量）"
+    echo "    • 工具执行统计（工具名、耗时、成功率）"
+    echo "    • Gateway 重启历史"
+    echo "    • Session 摘要信息"
+    echo "    • Thinking 深度统计"
+    echo "    • 系统事件和模型切换记录"
+    echo ""
+    echo "  数据${BOLD}不包含${NC}对话内容、个人信息或敏感凭证。"
+    echo "  数据仅发送到您配置的 Dashboard 地址。"
+    echo ""
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    read -rp "是否同意上报以上数据？(y/N): " consent
+    if [[ ! "$consent" =~ ^[Yy]$ ]]; then
+        echo -e "${RED}已取消。未经授权不会上报任何数据。${NC}"
+        exit 0
+    fi
+    echo ""
+    echo -e "${GREEN}✅ 已获得授权，继续配置...${NC}"
+    echo ""
+
     # 读取配置
     local default_host
     default_host=$(hostname)
