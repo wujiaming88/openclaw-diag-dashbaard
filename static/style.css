@@ -236,13 +236,7 @@ tr.clickable:hover td{background:var(--hover)}
 .mode-badge.advanced{background:rgba(58,134,255,.15);color:var(--blue);border:1px solid rgba(58,134,255,.3)}
 
 /* 锁定区域 */
-.locked-section{background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden;opacity:0.7}
-.locked-content{display:flex;align-items:center;gap:16px;padding:20px 24px}
-.locked-icon{font-size:2em;opacity:0.5}
-.locked-text{color:var(--text2);font-size:14px}
-.locked-text strong{color:var(--text);display:block;margin-bottom:4px}
-.locked-hint{font-size:12px;margin-top:6px;color:var(--text2)}
-.locked-hint code{background:var(--bg3);padding:2px 6px;border-radius:3px;font-family:"SF Mono",Monaco,Consolas,monospace;font-size:11px;color:var(--accent)}
+
 
 
 /* 探测结果区 */

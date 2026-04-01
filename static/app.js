@@ -798,23 +798,6 @@ window.changeMcPerPage = function (v) {
 };
 
 // ============================================================
-// 渲染 — 锁定提示 (标准模式下高级功能)
-// ============================================================
-function renderLockedSections() {
-  if (isAdvanced()) {
-    var lockRuns = $('#lockedRunsSection');
-    var lockEvents = $('#lockedEventsSection');
-    if (lockRuns) lockRuns.style.display = 'none';
-    if (lockEvents) lockEvents.style.display = 'none';
-    return;
-  }
-  var lockRuns = $('#lockedRunsSection');
-  var lockEvents = $('#lockedEventsSection');
-  if (lockRuns) lockRuns.style.display = 'block';
-  if (lockEvents) lockEvents.style.display = 'block';
-}
-
-// ============================================================
 // 渲染 — Run 列表 (需 debug 日志)
 // ============================================================
 function renderRunList(data) {
@@ -1243,7 +1226,7 @@ function showLoading() {
 
 function loadData() {
   showLoading();
-  renderLockedSections();
+
   conversationLoaded = false;
   var d = currentDate;
   var dashPath = currentNode ? nodeApiPath('/api/dashboard') : '/api/dashboard';
