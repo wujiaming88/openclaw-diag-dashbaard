@@ -210,7 +210,7 @@ class NodeStore(object):
                 try:
                     last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
                     elapsed = (now - last_dt).total_seconds()
-                    status = "online" if elapsed < NODE_TIMEOUT_SECONDS else "offline"
+                    status = "online" if elapsed < 1800 else "offline"
                 except (ValueError, TypeError):
                     status = "offline"
                 result.append({
@@ -484,7 +484,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             date = params.get("date", [""])[0]
             result = {
                 "date": date,
-                "summary": payload.get("summary", {}),
+                "summary": payload.get("kpi", payload.get("summary", {})),
                 "restarts": {"restarts": payload.get("restarts", []), "total": len(payload.get("restarts", [])), "current_pid": "", "current_since": ""},
                 "model_calls": {
                     "date": date,
@@ -498,7 +498,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             }
             self._send_json(result)
         elif endpoint == "summary":
-            self._send_json(payload.get("summary", {}))
+            # kpi 或 summary 字段均可
+            s = payload.get("kpi", payload.get("summary", {}))
+            self._send_json(s)
         elif endpoint == "model_calls":
             mc = payload.get("model_calls", [])
             page = 1
@@ -543,10 +545,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         elif endpoint == "journalctl":
             self._send_json(payload.get("journalctl", []))
         elif endpoint == "dates":
-            # 远程节点返回 payload 中已有数据的日期
-            summary = payload.get("summary", {})
-            date_val = summary.get("date", "")
-            self._send_json([date_val] if date_val else [])
+            # 远程节点返回 payload 中的日期列表
+            dates_list = payload.get("dates", [])
+            if not dates_list:
+                # fallback: 从 kpi/summary 提取
+                s = payload.get("kpi", payload.get("summary", {}))
+                d = s.get("date", "")
+                dates_list = [d] if d else []
+            self._send_json(dates_list)
         elif endpoint == "mode":
             self._send_json({"mode": "standard", "debug_log_available": False, "session_files_available": True})
         else:
