@@ -707,7 +707,8 @@ function renderModelCallsList(data) {
     var thinkHtml = '-';
     if (thinkChars > 0) {
       var barW = Math.min(60, Math.max(4, Math.round(thinkChars / 500)));
-      thinkHtml = '<span class="thinking-bar" style="width:' + barW + 'px" title="' + thinkChars + ' chars (' + ((mc.thinking_ratio || 0) * 100).toFixed(0) + '%)"></span> ' + fmtChars(thinkChars);
+      var pct = ((mc.thinking_ratio || 0) * 100).toFixed(0);
+      thinkHtml = '<span class="thinking-bar" style="width:' + barW + 'px"></span> ' + fmtChars(thinkChars) + ' <span style="color:var(--text2);font-size:10px">(' + pct + '%)</span>';
     }
 
     html += '<tr onclick="toggleMcRunDetail(\'' + detailId + '\')" style="cursor:pointer">';
