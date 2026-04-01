@@ -12,20 +12,6 @@ a{color:var(--accent);text-decoration:none}
 .container{max-width:1400px;margin:0 auto;padding:16px}
 
 /* 系统信息栏 */
-.sysinfo-bar{background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden}
-.sysinfo-header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;cursor:pointer;font-size:13px;color:var(--text2);user-select:none}
-.sysinfo-header:hover{background:var(--hover)}
-.sysinfo-header .sysinfo-summary{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
-.sysinfo-header .sysinfo-summary span{color:var(--text)}
-.sysinfo-header .sysinfo-summary .sep{color:var(--border)}
-.sysinfo-header .toggle-icon{transition:transform .2s;font-size:11px}
-.sysinfo-header.open .toggle-icon{transform:rotate(180deg)}
-.sysinfo-detail{display:none;padding:12px 16px;border-top:1px solid var(--border);font-size:12px;color:var(--text2)}
-.sysinfo-detail.open{display:block}
-.sysinfo-detail .sysinfo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 24px}
-.sysinfo-detail .si-item{display:flex;gap:8px}
-.sysinfo-detail .si-label{color:var(--text2);min-width:100px}
-.sysinfo-detail .si-value{color:var(--text)}
 
 /* 顶部栏 */
 .header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:16px 0;border-bottom:1px solid var(--border);margin-bottom:20px}

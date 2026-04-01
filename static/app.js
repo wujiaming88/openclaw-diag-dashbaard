@@ -247,7 +247,7 @@ function renderNodeSelector() {
 function fetchSystemInfo() {
   var path = currentNode ? nodeApiPath('/api/system_info') : '/api/system_info';
   api(path, function (info) {
-    renderSystemInfo(info);
+    // (system info bar removed)
   });
 }
 
@@ -327,55 +327,7 @@ function renderModeIndicator() {
 }
 
 // ============================================================
-// 渲染 — 系统信息
-// ============================================================
-function renderSystemInfo(info) {
-  if (!info) return;
-  var bar = $('#sysInfoBar');
-  bar.style.display = 'block';
-  var ver = info.openclaw_version || '?';
-  var modelShort = shortModel(info.default_model || '?');
-  var channels = (info.channels || []).join(', ') || '-';
-  var host = info.hostname || '?';
-
-  var html = '<div class="sysinfo-header" onclick="toggleSysInfo(this)">';
-  html += '<div class="sysinfo-summary">';
-  html += '<span>🟢 OpenClaw <strong>' + escHtml(ver) + '</strong></span>';
-  html += '<span class="sep">|</span>';
-  html += '<span>Model: <strong>' + escHtml(modelShort) + '</strong></span>';
-  html += '<span class="sep">|</span>';
-  html += '<span>Channels: <strong>' + escHtml(channels) + '</strong></span>';
-  html += '<span class="sep">|</span>';
-  html += '<span>Host: <strong>' + escHtml(host) + '</strong></span>';
-  html += '</div>';
-  html += '<span class="toggle-icon">▼</span>';
-  html += '</div>';
-  html += '<div class="sysinfo-detail"><div class="sysinfo-grid">';
-  var items = [
-    ['版本', info.openclaw_version],
-    ['配置文件', info.openclaw_config_path],
-    ['诊断', info.diagnostics_enabled ? '已开启' : '未开启'],
-    ['日志级别', info.logging_level],
-    ['默认模型', info.default_model],
-    ['Agents', (info.agents || []).join(', ')],
-    ['Channels', (info.channels || []).join(', ')],
-    ['Python', info.python_version],
-    ['平台', info.platform],
-    ['主机名', info.hostname],
-    ['CPU', info.cpu_count + ' 核'],
-    ['内存', info.memory_used_mb + 'MB / ' + info.memory_total_mb + 'MB'],
-    ['日志目录', info.log_dir],
-    ['日志文件数', info.log_file_count],
-    ['会话目录数', info.sessions_dir_count],
-    ['会话文件数', info.session_file_count],
-    ['模型调用数', (info.model_calls_total >= 0) ? info.model_calls_total : '加载中...'],
-  ];
-  items.forEach(function (it) {
-    html += '<div class="si-item"><span class="si-label">' + escHtml(it[0]) + '</span><span class="si-value">' + escHtml(String(it[1] || '-')) + '</span></div>';
-  });
-  html += '</div></div>';
-  bar.innerHTML = html;
-}
+// (system info bar removed)
 
 // ============================================================
 // 渲染 — 摘要卡片
@@ -1347,11 +1299,7 @@ function initAutoRefresh(ms) {
 // ============================================================
 // 全局事件处理
 // ============================================================
-window.toggleSysInfo = function (el) {
-  el.classList.toggle('open');
-  var detail = el.nextElementSibling;
-  if (detail) detail.classList.toggle('open');
-};
+// (toggleSysInfo removed)
 
 window.toggleSection = function (el) {
   el.classList.toggle('open');
