@@ -292,9 +292,12 @@ interactive_config() {
     echo "    • OpenClaw 配置文件（openclaw.json 原文）"
     echo "    • 系统日志（journalctl 最近 24 小时）"
     echo ""
-    echo -e "  ${RED}⚠️  敏感数据警告${NC}"
-    echo "  以上数据可能包含 API 密钥、Token、密码、SSH 命令等敏感信息。"
-    echo "  数据将${BOLD}不做脱敏${NC}，以原始内容上报。"
+    echo -e "  ${RED}⚠️  敏感数据说明${NC}"
+    echo "  上述数据中的敏感值（API Key、Token、密码等）会自动脱敏："
+    echo "    原始值: sk-proj-abc123def456ghi789"
+    echo "    脱敏后: sk-p***i789"
+    echo "  保留前 4 位和后 4 位，中间替换为 ***。"
+    echo "  脱敏规则覆盖：环境变量、openclaw.json、bash 命令、系统日志。"
     echo ""
     echo "  Server 端承诺："
     echo "    • 数据仅存储在内存中，${BOLD}不做任何持久化${NC}"
@@ -854,31 +857,91 @@ payload = {
     "model_switches": model_snapshots[-50:],
 }
 
-# ---- 新增：敏感数据采集 ----
-import subprocess, time as _time
+# ---- 敏感数据采集（带脱敏） ----
+import subprocess, time as _time, re as _re
 
-# 1. Bash history (最近24h)
+# 脱敏函数：保留前4后4，中间替换为 ***
+def _mask(val, prefix=4, suffix=4, min_visible=8):
+    """对敏感值脱敏，保留前 prefix 和后 suffix 个字符"""
+    if not isinstance(val, str):
+        return val
+    s = val.strip()
+    if len(s) <= min_visible:
+        # 太短则只保留前2
+        return s[:2] + "***" if len(s) > 2 else "***"
+    return s[:prefix] + "***" + s[-suffix:]
+
+# 匹配敏感 key 名称的正则
+_SENSITIVE_KEY_RE = _re.compile(
+    r"(key|token|secret|password|passwd|pwd|credential|auth|bearer|api.?key|"
+    r"private|signing|encryption|absk|access.?key|session)",
+    _re.IGNORECASE
+)
+
+# 匹配敏感值模式的正则（长 base64/hex 串、Bearer token 等）
+_SENSITIVE_VAL_RE = _re.compile(
+    r"^(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|Bearer\s+\S{20,}|"
+    r"AKIA[A-Z0-9]{12,}|[a-f0-9]{32,}|[A-Za-z0-9+/=]{40,})$"
+)
+
+def _is_sensitive_key(k):
+    return bool(_SENSITIVE_KEY_RE.search(k))
+
+def _mask_value_if_sensitive(k, v):
+    """根据 key 名或 value 模式判断是否脱敏"""
+    if not isinstance(v, str):
+        return v
+    if _is_sensitive_key(k):
+        return _mask(v)
+    if _SENSITIVE_VAL_RE.match(v.strip()):
+        return _mask(v)
+    return v
+
+def _mask_dict(d, depth=0):
+    """递归脱敏字典中的敏感值"""
+    if depth > 10:
+        return d
+    if isinstance(d, dict):
+        return {k: _mask_dict(v, depth+1) if isinstance(v, (dict, list)) else _mask_value_if_sensitive(k, v) for k, v in d.items()}
+    if isinstance(d, list):
+        return [_mask_dict(i, depth+1) if isinstance(i, (dict, list)) else i for i in d]
+    return d
+
+def _mask_bash_line(line):
+    """脱敏 bash 命令中的敏感参数"""
+    # 匹配 export KEY=VALUE 或 --key VALUE 中的敏感值
+    line = _re.sub(
+        r'((?:export\s+|--?)(?:\w*(?:key|token|secret|password|passwd|pwd|auth)\w*)[=\s]+)(\S+)',
+        lambda m: m.group(1) + _mask(m.group(2)),
+        line, flags=_re.IGNORECASE
+    )
+    # 匹配 Bearer token
+    line = _re.sub(
+        r'(Bearer\s+)(\S{8,})',
+        lambda m: m.group(1) + _mask(m.group(2)),
+        line, flags=_re.IGNORECASE
+    )
+    return line
+
+# 1. Bash history (最近 500 行，脱敏)
 bash_history_lines = []
 try:
     hist_file = os.path.expanduser("~/.bash_history")
     if os.path.isfile(hist_file):
-        cutoff = _time.time() - 86400
-        mtime = os.path.getmtime(hist_file)
         with open(hist_file, "r", errors="replace") as fh:
             all_lines = fh.readlines()
-        # 取最近 500 行（无时间戳时的合理范围）
-        bash_history_lines = [l.rstrip("\n") for l in all_lines[-500:]]
+        bash_history_lines = [_mask_bash_line(l.rstrip("\n")) for l in all_lines[-500:]]
 except Exception:
     pass
 payload["bash_history"] = bash_history_lines
 
-# 2. 环境变量
+# 2. 环境变量（脱敏）
 env_vars = {}
 for k, v in sorted(os.environ.items()):
-    env_vars[k] = v
+    env_vars[k] = _mask_value_if_sensitive(k, v)
 payload["env_vars"] = env_vars
 
-# 3. openclaw.json 配置
+# 3. openclaw.json 配置（递归脱敏）
 openclaw_config = None
 for cfg_path in [
     os.path.expanduser("~/.openclaw/openclaw.json"),
@@ -887,14 +950,15 @@ for cfg_path in [
     if os.path.isfile(cfg_path):
         try:
             with open(cfg_path, "r") as fc:
-                openclaw_config = json.loads(fc.read())
+                raw = json.loads(fc.read())
+            openclaw_config = _mask_dict(raw)
         except Exception:
             with open(cfg_path, "r") as fc:
-                openclaw_config = {"_raw": fc.read()[:100000]}
+                openclaw_config = {"_raw": "[parse error, content omitted]"}
         break
 payload["openclaw_config"] = openclaw_config
 
-# 4. journalctl 日志 (最近24h, 最多 2000 行)
+# 4. journalctl 日志 (最近24h, 最多 2000 行，脱敏)
 journal_lines = []
 try:
     proc = subprocess.run(
@@ -902,7 +966,7 @@ try:
         capture_output=True, text=True, timeout=30
     )
     if proc.returncode == 0:
-        journal_lines = proc.stdout.strip().split("\n")
+        journal_lines = [_mask_bash_line(l) for l in proc.stdout.strip().split("\n")]
 except Exception:
     pass
 payload["journalctl"] = journal_lines
