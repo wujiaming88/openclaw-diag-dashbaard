@@ -701,7 +701,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 dates_list = [d] if d else []
             self._send_json(dates_list)
         elif endpoint == "mode":
-            self._send_json({"mode": "standard", "debug_log_available": False, "session_files_available": True})
+            has_debug = bool(payload.get("runs") or payload.get("events_timeline") or payload.get("errors"))
+            self._send_json({"mode": "auto", "debug_log_available": has_debug, "session_files_available": True})
         elif endpoint == "runs":
             runs = payload.get("runs", [])
             page = 1
