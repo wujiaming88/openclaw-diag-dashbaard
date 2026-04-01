@@ -454,6 +454,42 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         })
 
     @staticmethod
+    def _normalize_restarts(raw_restarts):
+        """将 Collector 上报的 restarts 格式化为前端 renderRestarts 期望的格式"""
+        normalized = []
+        for i, r in enumerate(raw_restarts, 1):
+            normalized.append({
+                "num": i,
+                "type": r.get("type", "UNKNOWN"),
+                "shutdown_utc": r.get("timestamp", r.get("shutdown_utc")),
+                "startup_utc": r.get("startup_utc"),
+                "downtime_sec": r.get("downtime_sec", 0),
+                "details": r.get("details", r.get("reason", "")),
+            })
+        return {"restarts": normalized, "total": len(normalized), "current_pid": "", "current_since": ""}
+
+    @staticmethod
+    def _normalize_model_calls(raw_calls):
+        """将 Collector 上报的 model_calls 格式化为前端期望的格式"""
+        normalized = []
+        for mc in raw_calls:
+            # 前端读 mc.usage.input/output/cacheRead
+            usage = mc.get("usage", {})
+            if not usage:
+                usage = {
+                    "input": mc.get("input_tokens", 0),
+                    "output": mc.get("output_tokens", 0),
+                    "cacheRead": mc.get("cache_read", 0),
+                    "cacheWrite": mc.get("cache_write", 0),
+                    "totalTokens": mc.get("input_tokens", 0) + mc.get("output_tokens", 0) + mc.get("cache_read", 0),
+                }
+            normalized.append({
+                **mc,
+                "usage": usage,
+            })
+        return normalized
+
+    @staticmethod
     def _normalize_kpi(raw, payload):
         """将 Collector 上报的 kpi 字段映射为前端 renderSummary 期望的字段名"""
         mc = payload.get("model_calls", [])
@@ -488,6 +524,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             # 第三行 — 工具统计
             "tool_call_count": total_tool_calls,
             "tool_error_count": tool_error_count,
+            "tool_avg_duration_ms": round(avg_tool_ms, 1),
             "avg_tool_ms": round(avg_tool_ms, 1),
             # 兼容: 保留原始字段
             **raw,
@@ -527,10 +564,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             result = {
                 "date": date,
                 "summary": summary,
-                "restarts": {"restarts": payload.get("restarts", []), "total": len(payload.get("restarts", [])), "current_pid": "", "current_since": ""},
+                "restarts": self._normalize_restarts(payload.get("restarts", [])),
                 "model_calls": {
                     "date": date,
-                    "model_calls": payload.get("model_calls", []),
+                    "model_calls": self._normalize_model_calls(payload.get("model_calls", [])),
                     "total": len(payload.get("model_calls", [])),
                     "page": 1,
                     "per_page": len(payload.get("model_calls", [])) or 50,
