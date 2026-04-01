@@ -485,6 +485,7 @@ session_messages = {}  # {session_id: [{id, role, type, timestamp, preview, ...}
 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 for d in sessions_dirs:
+    _agent_name = os.path.basename(os.path.dirname(d))  # agents/{name}/sessions → {name}
     for pattern in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
         for fpath in glob.glob(os.path.join(d, pattern)):
             fname = os.path.basename(fpath)
@@ -724,6 +725,10 @@ for d in sessions_dirs:
                     "inference_ms": inference_ms,
                     "tokens_per_sec": tokens_per_sec,
                     "session_id": internal_session_id,
+                    "agent": _agent_name,
+                    "output_tokens": output_tokens,
+                    "tool_calls": tool_call_list if tool_call_list else [],
+                    "stopReason": msg.get("stopReason", ""),
                     "model": model,
                     "provider": msg.get("provider", ""),
                     "api": msg.get("api", ""),
