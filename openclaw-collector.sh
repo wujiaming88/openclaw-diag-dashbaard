@@ -667,8 +667,8 @@ for d in sessions_dirs:
                     if itype == "toolCall":
                         tc_id = item.get("id", "")
                         tc_name = item.get("name", "")
-                        # 提取参数摘要
-                        tc_input = item.get("input", {})
+                        # 提取参数摘要（兼容 arguments 和 input 两种字段名）
+                        tc_input = item.get("arguments") or item.get("input") or {}
                         args_summary = ""
                         if isinstance(tc_input, dict):
                             if "command" in tc_input:
