@@ -439,8 +439,6 @@ with open(config_path, 'r') as f:
 
 dashboard_url = config["dashboard_url"].rstrip("/")
 api_key = config["api_key"]
-node_id = config["node_id"]
-node_name = config["node_name"]
 
 # ========== 数据采集逻辑 ==========
 
@@ -960,22 +958,11 @@ except Exception:
 payload["journalctl"] = journal_lines
 
 # Build report
-# Generate node_token for anti-spoofing
-import hashlib as _hashlib
-import hmac as hmac_mod
-_node_token = hmac_mod.new(
-    api_key.encode(), ("openclaw-node:" + node_id).encode(), _hashlib.sha256
-).hexdigest() if api_key else ""
-
 report = {
-    "node_id": node_id,
-    "node_name": node_name,
-    "node_token": _node_token,
     "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "data_type": "full_report",
     "payload": payload,
 }
-
 # Send report (gzip compressed)
 report_json = json.dumps(report, ensure_ascii=False)
 report_bytes = report_json.encode("utf-8")
@@ -1078,7 +1065,7 @@ check_status() {
         echo -e "${GREEN}采集进程运行中 (PID: $pid)${NC}"
         if [ -f "$CONFIG_FILE" ]; then
             echo "  配置: $CONFIG_FILE"
-            load_config && echo "  节点: $NODE_ID ($NODE_NAME)" && echo "  目标: $DASHBOARD_URL" && echo "  间隔: ${INTERVAL}s"
+            load_config && echo "  目标: $DASHBOARD_URL" && echo "  间隔: ${INTERVAL}s"
         fi
         return 0
     else
@@ -1174,15 +1161,40 @@ except ImportError:
     from urllib2 import Request, urlopen, HTTPError, URLError
 
 cfg = json.load(open('$CONFIG_FILE'))
-url = cfg['dashboard_url'].rstrip('/') + '/api/node/' + cfg['node_id']
 api_key = cfg['api_key']
+
+# 先查询 Server 上的节点列表，找到自己的 IP
+try:
+    list_url = cfg['dashboard_url'].rstrip('/') + '/api/nodes'
+    req = Request(list_url)
+    req.add_header('Authorization', 'Bearer ' + api_key)
+    resp = urlopen(req, timeout=15)
+    nodes = json.loads(resp.read().decode('utf-8')).get('nodes', [])
+    remote_nodes = [n for n in nodes if n.get('node_type') == 'remote']
+    if not remote_nodes:
+        print('\033[33m⚠️ Server 上没有远程节点数据\033[0m')
+        sys.exit(0)
+    if len(remote_nodes) == 1:
+        node_id = remote_nodes[0]['node_id']
+    else:
+        print('找到 %d 个远程节点:' % len(remote_nodes))
+        for i, n in enumerate(remote_nodes):
+            print('  [%d] %s (%s)' % (i+1, n['node_id'], n.get('node_name','')))
+        choice = input('请选择要删除的节点编号: ').strip()
+        idx = int(choice) - 1
+        node_id = remote_nodes[idx]['node_id']
+except Exception as e:
+    print('\033[31m❌ 查询节点失败: %s\033[0m' % str(e))
+    sys.exit(1)
+
+url = cfg['dashboard_url'].rstrip('/') + '/api/node/' + node_id
 req = Request(url, method='DELETE')
 req.add_header('Authorization', 'Bearer ' + api_key)
 try:
     resp = urlopen(req, timeout=15)
     result = json.loads(resp.read().decode('utf-8'))
     if result.get('ok'):
-        print('\033[32m✅ 节点数据已从 Server 删除: %s\033[0m' % cfg['node_id'])
+        print('\033[32m✅ 节点数据已从 Server 删除: %s\033[0m' % node_id)
     else:
         print('\033[31m❌ 删除失败: %s\033[0m' % result.get('error', 'unknown'))
         sys.exit(1)
