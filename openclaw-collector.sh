@@ -839,14 +839,55 @@ for mc in model_calls:
     if not sid:
         continue
     if sid not in sessions_map:
-        sessions_map[sid] = {"session_id": sid, "message_count": 0, "model": "", "total_tokens": 0}
-    sessions_map[sid]["message_count"] += 1
-    if not sessions_map[sid]["model"]:
-        sessions_map[sid]["model"] = mc.get("model", "")
+        sessions_map[sid] = {
+            "session_id": sid, "message_count": 0, "model": "", "agent": "",
+            "total_tokens": 0, "model_call_count": 0,
+            "total_inference_ms": 0, "total_output_tokens": 0, "tool_call_count": 0,
+            "first_ts": "", "last_ts": "",
+            "_tps_values": [],
+        }
+    s = sessions_map[sid]
+    s["message_count"] += 1
+    s["model_call_count"] += 1
+    if not s["model"]:
+        s["model"] = mc.get("model", "")
+    if not s["agent"]:
+        s["agent"] = mc.get("agent", "")
     u = mc.get("usage", {})
-    sessions_map[sid]["total_tokens"] += u.get("totalTokens", 0) or (u.get("input", 0) + u.get("output", 0))
+    s["total_tokens"] += u.get("totalTokens", 0) or (u.get("input", 0) + u.get("output", 0))
+    inf_ms = mc.get("inference_ms", 0) or 0
+    s["total_inference_ms"] += inf_ms
+    s["total_output_tokens"] += mc.get("output_tokens", 0) or 0
+    s["tool_call_count"] += len(mc.get("tool_calls", []))
+    ts = mc.get("timestamp", "")
+    if ts:
+        if not s["first_ts"] or ts < s["first_ts"]:
+            s["first_ts"] = ts
+        if not s["last_ts"] or ts > s["last_ts"]:
+            s["last_ts"] = ts
+    tps = mc.get("tokens_per_sec", 0) or 0
+    if tps > 0:
+        s["_tps_values"].append(tps)
 
-sessions_list = sorted(sessions_map.values(), key=lambda s: s.get("session_id", ""))
+sessions_list = []
+for s in sorted(sessions_map.values(), key=lambda x: x.get("last_ts", ""), reverse=True):
+    avg_inf = round(s["total_inference_ms"] / s["model_call_count"]) if s["model_call_count"] > 0 else 0
+    avg_tps = round(sum(s["_tps_values"]) / len(s["_tps_values"]), 1) if s["_tps_values"] else 0
+    sessions_list.append({
+        "session_id": s["session_id"],
+        "agent": s["agent"],
+        "model": s["model"],
+        "message_count": s["message_count"],
+        "model_call_count": s["model_call_count"],
+        "total_tokens": s["total_tokens"],
+        "total_inference_ms": s["total_inference_ms"],
+        "avg_inference_ms": avg_inf,
+        "total_output_tokens": s["total_output_tokens"],
+        "tokens_per_sec": avg_tps,
+        "tool_call_count": s["tool_call_count"],
+        "start": s["first_ts"],
+        "end": s["last_ts"],
+    })
 
 # Gateway restarts
 restarts = []
