@@ -1083,6 +1083,8 @@ if _use_log_runs:
                 if mc_t and abs((mc_t - et).total_seconds()) < 600:
                     matched_mcs.append(_all_mc)
         matched_mcs.sort(key=lambda c: c.get("timestamp", ""))
+        if not matched_mcs:
+            continue  # 跳过无 model_calls 匹配的空 Run
         agent = r["agent"] or (matched_mcs[0].get("agent", "") if matched_mcs else "")
         model = r["model"] or (Counter(c.get("model","") for c in matched_mcs).most_common(1)[0][0] if matched_mcs else "")
         tc = sum(len(c.get("tool_calls", [])) for c in matched_mcs)
