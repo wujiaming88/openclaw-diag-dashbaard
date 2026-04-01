@@ -226,6 +226,71 @@ python3 openclaw-dashboard.py --cli --probe doctor  # 单项探测
 ./openclaw-diag.sh -f -a waicode            # 实时跟踪指定 Agent
 ```
 
+## 🚀 部署方式
+
+### 快速启动（开发环境）
+
+```bash
+python3 openclaw-dashboard.py                    # 标准模式，端口 9090
+python3 openclaw-dashboard.py --advanced --port 8765  # 高级模式，自定义端口
+```
+
+### systemd 常驻服务（推荐生产环境）
+
+一键安装：
+
+```bash
+sudo ./deploy/install.sh
+sudo ./deploy/install.sh --port 8765 --advanced
+sudo ./deploy/install.sh --api-key my-secret
+```
+
+或手动安装：
+
+```bash
+# 1. 复制文件
+sudo mkdir -p /opt/openclaw-diag
+sudo cp openclaw-dashboard.py /opt/openclaw-diag/
+sudo cp -r static/ /opt/openclaw-diag/
+
+# 2. 配置
+sudo mkdir -p /etc/openclaw-diag
+sudo cp deploy/openclaw-diag.env /etc/openclaw-diag/
+sudo vi /etc/openclaw-diag/openclaw-diag.env
+
+# 3. 安装服务
+sudo cp deploy/openclaw-diag.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now openclaw-diag
+
+# 4. 检查状态
+sudo systemctl status openclaw-diag
+journalctl -u openclaw-diag -f
+```
+
+卸载：`sudo ./deploy/install.sh --uninstall`
+
+### Docker 部署（推荐隔离环境）
+
+```bash
+# 构建并启动
+docker compose up -d
+
+# 自定义配置
+OC_DIAG_PORT=8765 OC_DIAG_API_KEY=mysecret docker compose up -d
+
+# 高级模式
+OC_DIAG_ADVANCED=--advanced docker compose up -d
+
+# 查看日志
+docker compose logs -f
+
+# 停止
+docker compose down
+```
+
+Docker 部署会将宿主机的日志和 session 目录以只读方式挂载，用于本地诊断。
+
 ## 命令行参数
 
 | 参数 | 默认值 | 说明 |
@@ -346,12 +411,18 @@ tokens_per_sec = output_tokens / (inference_ms / 1000)
 ```
 openclaw-diag-dashbaard/
 ├── openclaw-dashboard.py   # Web 面板 + CLI（3900+ 行）
-├── openclaw-diag.sh        # Shell 诊断脚本 v3.2（1100+ 行）
-├── gateway-restarts.sh     # 独立重启检测脚本
+├── openclaw-collector.sh   # 远程采集脚本
+├── start-dashboard.sh      # 交互式启动脚本
+├── Dockerfile              # Docker 镜像定义
+├── docker-compose.yml      # Docker Compose 配置
 ├── static/
 │   ├── index.html          # 面板布局
 │   ├── app.js              # 前端逻辑（1400+ 行）
 │   └── style.css           # 暗色主题样式
+├── deploy/
+│   ├── install.sh          # 一键安装脚本
+│   ├── openclaw-diag.service  # systemd 服务文件
+│   └── openclaw-diag.env   # 环境变量配置模板
 ├── docs/
 │   └── screenshots/        # 面板截图
 ├── README.md               # English documentation

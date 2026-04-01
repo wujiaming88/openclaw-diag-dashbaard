@@ -226,6 +226,71 @@ python3 openclaw-dashboard.py --cli --probe doctor  # Single probe
 ./openclaw-diag.sh -f -a waicode            # Live follow specific agent
 ```
 
+## 🚀 Deployment
+
+### Quick Start (Development)
+
+```bash
+python3 openclaw-dashboard.py                    # Standard mode, port 9090
+python3 openclaw-dashboard.py --advanced --port 8765  # Advanced mode, custom port
+```
+
+### systemd Service (Recommended for Production)
+
+One-click install:
+
+```bash
+sudo ./deploy/install.sh
+sudo ./deploy/install.sh --port 8765 --advanced
+sudo ./deploy/install.sh --api-key my-secret
+```
+
+Or manual setup:
+
+```bash
+# 1. Copy files
+sudo mkdir -p /opt/openclaw-diag
+sudo cp openclaw-dashboard.py /opt/openclaw-diag/
+sudo cp -r static/ /opt/openclaw-diag/
+
+# 2. Configure
+sudo mkdir -p /etc/openclaw-diag
+sudo cp deploy/openclaw-diag.env /etc/openclaw-diag/
+sudo vi /etc/openclaw-diag/openclaw-diag.env
+
+# 3. Install service
+sudo cp deploy/openclaw-diag.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now openclaw-diag
+
+# 4. Check status
+sudo systemctl status openclaw-diag
+journalctl -u openclaw-diag -f
+```
+
+Uninstall: `sudo ./deploy/install.sh --uninstall`
+
+### Docker (Recommended for Isolation)
+
+```bash
+# Build and run
+docker compose up -d
+
+# With custom config
+OC_DIAG_PORT=8765 OC_DIAG_API_KEY=mysecret docker compose up -d
+
+# Advanced mode
+OC_DIAG_ADVANCED=--advanced docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+The Docker setup mounts host log and session directories as read-only volumes for local diagnostics.
+
 ## Command Line Options
 
 | Option | Default | Description |
@@ -346,12 +411,18 @@ Identifies 4 event types from log files:
 ```
 openclaw-diag-dashbaard/
 ├── openclaw-dashboard.py   # Web dashboard + CLI (3900+ lines)
-├── openclaw-diag.sh        # Shell diagnostic script v3.2 (1100+ lines)
-├── gateway-restarts.sh     # Standalone restart detection
+├── openclaw-collector.sh   # Remote collector script
+├── start-dashboard.sh      # Interactive start script
+├── Dockerfile              # Docker image definition
+├── docker-compose.yml      # Docker Compose config
 ├── static/
 │   ├── index.html          # Dashboard layout
 │   ├── app.js              # Frontend logic (1400+ lines)
 │   └── style.css           # Dark theme styles
+├── deploy/
+│   ├── install.sh          # One-click installer
+│   ├── openclaw-diag.service  # systemd unit file
+│   └── openclaw-diag.env   # Environment config template
 ├── docs/
 │   └── screenshots/        # Dashboard screenshots
 ├── README.md               # English documentation

@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  openclaw-diag:
+    build: .
+    container_name: openclaw-diag
+    restart: unless-stopped
+    ports:
+      - "${OC_DIAG_PORT:-9090}:${OC_DIAG_PORT:-9090}"
+    environment:
+      - OC_DIAG_PORT=${OC_DIAG_PORT:-9090}
+      - OC_DIAG_HOST=0.0.0.0
+      - OC_DIAG_API_KEY=${OC_DIAG_API_KEY:-}
+      - OC_DIAG_ADVANCED=${OC_DIAG_ADVANCED:-}
+    volumes:
+      # Mount OpenClaw log directory (for advanced mode)
+      - ${OC_LOG_DIR:-/tmp/openclaw}:/tmp/openclaw:ro
+      # Mount OpenClaw session directory (for local diagnostics)
+      - ${OC_SESSIONS_DIR:-~/.openclaw/agents}:/root/.openclaw/agents:ro
+    entrypoint: >
+      python3 openclaw-dashboard.py
+        --no-browser
+        --port ${OC_DIAG_PORT:-9090}
+        --host 0.0.0.0
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${OC_DIAG_PORT:-9090}/api/mode')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

@@ -1,0 +1,30 @@
+[Unit]
+Description=OpenClaw Diagnostic Dashboard
+Documentation=https://github.com/nicepkg/openclaw
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/openclaw-diag/openclaw-diag.env
+ExecStart=/usr/bin/python3 /opt/openclaw-diag/openclaw-dashboard.py \
+    --port ${OC_DIAG_PORT} \
+    --host ${OC_DIAG_HOST} \
+    --no-browser \
+    $OC_DIAG_EXTRA_ARGS
+Restart=on-failure
+RestartSec=5
+WatchdogSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw-diag
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp/openclaw
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target
