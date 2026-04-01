@@ -12,6 +12,7 @@
 #   bash openclaw-collector.sh --config  # 重新配置
 #   bash openclaw-collector.sh --status  # 查看后台进程状态
 #   bash openclaw-collector.sh --stop    # 停止后台进程
+#   bash openclaw-collector.sh --purge   # 远程删除节点数据
 #
 # 依赖: bash + python3 (标准库)
 # ============================================================
@@ -972,21 +973,38 @@ except Exception:
 payload["journalctl"] = journal_lines
 
 # Build report
+# Generate node_token for anti-spoofing
+import hashlib as _hashlib
+import hmac as hmac_mod
+_node_token = hmac_mod.new(
+    api_key.encode(), ("openclaw-node:" + node_id).encode(), _hashlib.sha256
+).hexdigest() if api_key else ""
+
 report = {
     "node_id": node_id,
     "node_name": node_name,
+    "node_token": _node_token,
     "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "data_type": "full_report",
     "payload": payload,
 }
 
-# Send report
+# Send report (gzip compressed)
 report_json = json.dumps(report, ensure_ascii=False)
 report_bytes = report_json.encode("utf-8")
 
+# Gzip 压缩
+import gzip as _gzip_mod
+compressed = _gzip_mod.compress(report_bytes)
+print("📦 压缩: %.1f KB → %.1f KB (%.0f%%)" % (
+    len(report_bytes)/1024, len(compressed)/1024,
+    (1 - len(compressed)/len(report_bytes)) * 100 if report_bytes else 0
+), file=sys.stderr)
+
 url = dashboard_url + "/api/report"
-req = Request(url, data=report_bytes, method="POST")
+req = Request(url, data=compressed, method="POST")
 req.add_header("Content-Type", "application/json; charset=utf-8")
+req.add_header("Content-Encoding", "gzip")
 req.add_header("Authorization", "Bearer " + api_key)
 
 try:
@@ -1152,6 +1170,44 @@ case "${1:-}" in
     --stop)
         stop_daemon
         ;;
+    --purge)
+        # 远程删除本节点在 Server 上的数据
+        if ! load_config; then
+            echo -e "${RED}❌ 未找到配置文件，请先运行一次配置。${NC}"
+            exit 1
+        fi
+        load_config
+        echo -e "${CYAN}正在从 Server 删除节点数据...${NC}"
+        python3 -c "
+import json, os, sys
+try:
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError, URLError
+except ImportError:
+    from urllib2 import Request, urlopen, HTTPError, URLError
+
+cfg = json.load(open('$CONFIG_FILE'))
+url = cfg['dashboard_url'].rstrip('/') + '/api/node/' + cfg['node_id']
+api_key = cfg['api_key']
+req = Request(url, method='DELETE')
+req.add_header('Authorization', 'Bearer ' + api_key)
+try:
+    resp = urlopen(req, timeout=15)
+    result = json.loads(resp.read().decode('utf-8'))
+    if result.get('ok'):
+        print('\033[32m✅ 节点数据已从 Server 删除: %s\033[0m' % cfg['node_id'])
+    else:
+        print('\033[31m❌ 删除失败: %s\033[0m' % result.get('error', 'unknown'))
+        sys.exit(1)
+except HTTPError as e:
+    body = e.read().decode('utf-8', errors='replace')
+    print('\033[31m❌ HTTP %d: %s\033[0m' % (e.code, body[:200]))
+    sys.exit(1)
+except Exception as e:
+    print('\033[31m❌ 错误: %s\033[0m' % str(e))
+    sys.exit(1)
+"
+        ;;
     --_loop)
         # 内部循环模式 (daemon 使用)
         load_config
@@ -1179,6 +1235,7 @@ if os.path.isfile(cfg):
         echo "  --config    重新配置"
         echo "  --status    查看后台进程状态"
         echo "  --stop      停止后台进程（自动还原 OpenClaw 配置）"
+        echo "  --purge     远程删除本节点在 Server 上的数据"
         echo "  --help      显示此帮助"
         echo ""
         echo "高级采集模式:"

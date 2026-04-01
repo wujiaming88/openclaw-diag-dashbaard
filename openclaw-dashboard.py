@@ -3372,32 +3372,51 @@ NODE_TIMEOUT_SECONDS = 1800  # 30 分钟无上报标记为 offline
 
 
 class NodeStore(object):
-    """管理多节点数据（内存存储）"""
+    """管理多节点数据（内存存储，分节点锁）"""
 
     def __init__(self):
         self._nodes = {}  # node_id -> {node_name, last_report_at, payload, node_type}
-        self._lock = threading.Lock()
+        self._global_lock = threading.Lock()  # 保护 _nodes 字典结构和 _node_locks
+        self._node_locks = {}  # node_id -> threading.Lock  —— 分节点锁
+
+    def _get_node_lock(self, node_id):
+        """获取或创建节点专属锁（需在 _global_lock 外调用）"""
+        with self._global_lock:
+            if node_id not in self._node_locks:
+                self._node_locks[node_id] = threading.Lock()
+            return self._node_locks[node_id]
 
     def upsert(self, node_id, node_name, payload, node_type="remote"):
-        """新增或更新节点数据"""
-        with self._lock:
-            self._nodes[node_id] = {
-                "node_name": node_name,
-                "last_report_at": datetime.now(timezone.utc).isoformat(),
-                "payload": payload,
-                "node_type": node_type,
-            }
+        """新增或更新节点数据（分节点锁，不阻塞其他节点）"""
+        node_lock = self._get_node_lock(node_id)
+        with node_lock:
+            with self._global_lock:
+                self._nodes[node_id] = {
+                    "node_name": node_name,
+                    "last_report_at": datetime.now(timezone.utc).isoformat(),
+                    "payload": payload,
+                    "node_type": node_type,
+                }
+
+    def delete_node(self, node_id):
+        """删除节点及其数据，返回 True 表示成功删除，False 表示不存在"""
+        with self._global_lock:
+            if node_id not in self._nodes:
+                return False
+            del self._nodes[node_id]
+            self._node_locks.pop(node_id, None)
+            return True
 
     def get_node(self, node_id):
         """获取节点数据，返回 None 如果不存在"""
-        with self._lock:
+        with self._global_lock:
             return self._nodes.get(node_id)
 
     def get_nodes_list(self):
         """返回所有节点列表"""
         now = datetime.now(timezone.utc)
         result = []
-        with self._lock:
+        with self._global_lock:
             for nid, ndata in self._nodes.items():
                 node_type = ndata.get("node_type", "remote")
                 if node_type == "local":
@@ -3420,7 +3439,7 @@ class NodeStore(object):
 
     def get_node_payload(self, node_id):
         """获取节点 payload"""
-        with self._lock:
+        with self._global_lock:
             ndata = self._nodes.get(node_id)
             if ndata:
                 return ndata.get("payload", {})
@@ -3432,7 +3451,7 @@ class NodeStore(object):
         dates = data_store.get_dates()
         if not dates:
             # 即使没有日期数据，也注册 local 节点（空数据）
-            with self._lock:
+            with self._global_lock:
                 self._nodes["local"] = {
                     "node_name": socket.gethostname(),
                     "last_report_at": datetime.now(timezone.utc).isoformat(),
@@ -3443,7 +3462,7 @@ class NodeStore(object):
 
         date = dates[0]
         payload = self._build_local_payload(data_store, date)
-        with self._lock:
+        with self._global_lock:
             self._nodes["local"] = {
                 "node_name": socket.gethostname(),
                 "last_report_at": datetime.now(timezone.utc).isoformat(),
@@ -3459,7 +3478,7 @@ class NodeStore(object):
 
     def is_local(self, node_id):
         """判断是否是本地节点"""
-        with self._lock:
+        with self._global_lock:
             ndata = self._nodes.get(node_id)
             if ndata:
                 return ndata.get("node_type") == "local"
@@ -3646,13 +3665,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             self._send_json({"error": "Invalid API key"}, 401)
             return
 
-        # 读取请求体
+        # 读取请求体（支持 gzip 压缩）
         try:
             content_length = int(self.headers.get("Content-Length", 0))
-            if content_length > 10 * 1024 * 1024:  # 10MB 限制
+            if content_length > 20 * 1024 * 1024:  # 20MB 限制（压缩前可能更大）
                 self._send_json({"error": "Request body too large"}, 413)
                 return
             body = self.rfile.read(content_length)
+
+            # gzip 解压
+            content_encoding = self.headers.get("Content-Encoding", "").lower()
+            if content_encoding == "gzip":
+                import gzip as _gzip
+                body = _gzip.decompress(body)
+
             data = json.loads(body.decode("utf-8"))
         except (ValueError, json.JSONDecodeError) as e:
             self._send_json({"error": "Invalid JSON: %s" % str(e)}, 400)
@@ -3669,6 +3695,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 
         node_name = data.get("node_name", node_id)
         payload = data.get("payload", {})
+
+        # 验证 node_token（防止节点冒名）
+        node_token = data.get("node_token", "")
+        if self.api_key and node_token:
+            expected = hmac.new(
+                self.api_key.encode(), ("openclaw-node:" + node_id).encode(), hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(node_token, expected):
+                self._send_json({"error": "Invalid node_token"}, 403)
+                return
 
         if not isinstance(payload, dict):
             self._send_json({"error": "payload must be an object"}, 400)
@@ -4066,6 +4102,48 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 self._send_json({"error": str(e)}, 500)
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
+
+    def do_DELETE(self):
+        """处理 DELETE 请求 — 节点数据删除"""
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # DELETE /api/node/<node_id>
+        if not path.startswith("/api/node/"):
+            self._send_json({"error": "Not found"}, 404)
+            return
+
+        node_id = path[len("/api/node/"):].strip("/")
+        if not node_id:
+            self._send_json({"error": "Missing node_id"}, 400)
+            return
+
+        # 认证：Bearer token 或 Dashboard session
+        auth_header = self.headers.get("Authorization", "")
+        authed = False
+        if auth_header.startswith("Bearer ") and self.api_key:
+            token = auth_header[7:].strip()
+            authed = hmac.compare_digest(token, self.api_key)
+        if not authed:
+            authed = self._check_dashboard_auth()
+        if not authed:
+            self._send_json({"error": "Unauthorized"}, 401)
+            return
+
+        # 禁止删除本地节点
+        if self.node_store and self.node_store.is_local(node_id):
+            self._send_json({"error": "Cannot delete local node"}, 403)
+            return
+
+        if self.node_store and self.node_store.delete_node(node_id):
+            self._send_json({
+                "ok": True,
+                "node_id": node_id,
+                "message": "Node data deleted",
+                "timestamp": _utcnow_iso(),
+            })
+        else:
+            self._send_json({"error": "Node not found: %s" % node_id}, 404)
 
     def do_GET(self):
         parsed = urlparse(self.path)
