@@ -1,8 +1,29 @@
 # OpenClaw Diagnostic Dashboard
 
-A web-based performance diagnostic tool for the [OpenClaw](https://github.com/nicepkg/openclaw) AI agent platform. Zero external dependencies — pure Python standard library.
+A distributed diagnostic platform for [OpenClaw](https://github.com/nicepkg/openclaw) AI agent deployments. Consists of a **Dashboard Server** for visualization and a **Collector** for remote data gathering. Zero external dependencies — pure Python standard library.
 
-> **v3.2** — Multi-agent filtering support. New `-a/--agent` flag for per-agent diagnostics across batch, summary, and live follow modes. Critical bug fixes for date filtering accuracy and agent-scoped statistics.
+> **v4.2** — Multi-node distributed architecture with Collector/Server model, gzip transport, HMAC node authentication, per-node locking, sensitive data collection (env vars, config, bash history, journalctl), full-site login gate, and TTL-cached API.
+
+## Architecture
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Node A (SG)    │     │  Node B (HK)    │     │  Node C (US)    │
+│  Collector      │     │  Collector      │     │  Collector      │
+│  openclaw-      │     │  openclaw-      │     │  openclaw-      │
+│  collector.sh   │     │  collector.sh   │     │  collector.sh   │
+└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+         │ HTTPS + gzip          │                       │
+         │ + HMAC auth           │                       │
+         └───────────────┬───────┴───────────────────────┘
+                         ▼
+              ┌─────────────────────┐
+              │  Dashboard Server   │
+              │  openclaw-          │
+              │  dashboard.py       │
+              │  (Web UI + API)     │
+              └─────────────────────┘
+```
 
 ## 📸 Screenshots
 
@@ -10,286 +31,264 @@ A web-based performance diagnostic tool for the [OpenClaw](https://github.com/ni
 
 ![Dashboard Overview](docs/screenshots/dashboard-overview.png)
 
-*5 rows of KPI cards: core metrics (run count, inference ratio, token throughput), token details, message pipeline, and tool/thinking stats. System probe panel with 6 one-click diagnostics.*
+*5 rows of KPI cards + system probe panel with 6 one-click diagnostics.*
 
 ### Standard Mode — Full Page
 
 ![Dashboard Standard](docs/screenshots/dashboard-standard.png)
 
-*Complete standard mode view: KPI overview → system probes → Gateway restart history → model call records → session browser → error tracking. Zero configuration needed.*
+*KPI overview → probes → restart history → model calls → sessions → errors. Zero config needed.*
 
 ### Advanced Mode — Full Page
 
 ![Dashboard Advanced](docs/screenshots/dashboard-advanced.png)
 
-*Advanced mode adds run-level details, event timeline, and debug log analysis on top of all standard mode features.*
+*Adds run-level details, event timeline, and debug log analysis.*
 
-### CLI Mode
+### CLI Diagnostics
 
 ```
 🦞 OpenClaw 诊断工具 v3.2.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🏥 健康检查 ... ✅ (9.9s)
-  Agent: 7 个 (Coordinator, Developer, Designer, Researcher, QA, ...)
-    main: 49 sessions | waicode: 8 sessions | waidesign: 4 sessions ...
-  Session 总数: 49
-
-🌐 Gateway 状态 ... ✅ (12.0s)
-  PID: 806521 | 端口: 18789 (loopback) | 状态: active/running | RPC: ✅ 正常
-
-✅ 配置校验 ... ✅ (4.3s)
-  Config valid: ~/.openclaw/openclaw.json
-
-🔬 全面诊断 ... ✅ (17.9s)
-  ┌  OpenClaw doctor
-  ◇  Startup optimization ──────────────────────────────────╮
-  │  - NODE_COMPILE_CACHE is not set                        │
-  │  - OPENCLAW_NO_RESPAWN is not set to 1                  │
-  ├─────────────────────────────────────────────────────────╯
+🏥 健康检查 ... ✅ (9.9s)    🌐 Gateway 状态 ... ✅ (12.0s)
+✅ 配置校验 ... ✅ (4.3s)    🔬 全面诊断 ... ✅ (17.9s)
+📦 版本状态 ... ✅ (10.5s)   🤖 模型状态 ... ✅ (10.6s)
 ```
 
-### Shell Script — Run Diagnostics
+---
 
-```
-[OpenClaw 诊断报告]
-日期: 2026-03-19
+## Components
 
-====================================================================
-                             [摘要统计]
-====================================================================
-  Run 总数:        139
-  工具调用总数:    1237
-  工具调用:        1267 次 (失败 1, 成功率 100%)
-  工具平均耗时:    876ms
-  Top 工具:        exec(614), read(313), edit(195)
+### 1. Dashboard Server (`openclaw-dashboard.py`)
 
-  推理延迟:    平均 9.4s  (基于 session 时间戳, 1304 次调用)
-  Token 吞吐:  平均 32.4 tok/s  (基于 session 时间戳, 1295 次调用)
+The central web server that:
+- Collects **local** diagnostics (session files, logs, CLI probes)
+- Receives **remote** data from Collectors via HTTP API
+- Serves the web dashboard UI + REST API
+- Provides CLI probe mode (no web server needed)
 
-  Agent 活动分布:
-    clawdoctor      推理  67次  平均     9.0s  吞吐 29.9 tok/s  会话 3
-    main            推理 884次  平均     8.6s  吞吐 36.0 tok/s  会话 7
-    waicode         推理 708次  平均     9.1s  吞吐 41.5 tok/s  会话 18
-    waiqa           推理  25次  平均     8.5s  吞吐 49.6 tok/s  会话 1
-    wairesearch     推理  23次  平均    15.6s  吞吐 47.6 tok/s  会话 1
+### 2. Collector (`openclaw-collector.sh`)
 
-  工具使用排行:
-    exec     588次  平均耗时 1.5s
-    read     311次  平均耗时 56ms
-    edit     195次  平均耗时 38ms
-    ...
-```
+A lightweight bash script that runs on each OpenClaw node:
+- Gathers 12 data sources (session metrics, tool stats, restarts, env vars, config, bash history, journalctl, etc.)
+- Compresses with gzip and authenticates with HMAC-SHA256
+- Uploads to Dashboard Server on schedule (daemon/once/loop modes)
+- Auto-enables `diagnostics.enabled` + `logging.level=debug` on start, restores on exit
+
+### 3. Shell Diagnostics (`openclaw-diag.sh`)
+
+Standalone terminal diagnostic tool:
+- Multi-agent filtering (`-a/--agent NAME`)
+- Live follow mode (`-f`), summary mode (`-s`)
+- Session-based inference timing and token throughput
+- Zero server dependency — works offline
+
+---
 
 ## Features
 
-### Web Dashboard (`openclaw-dashboard.py`)
+### Multi-Node Management
+- **Node Registry** — Auto-registers nodes on first report; online/offline status tracking (30-min timeout)
+- **Node Selector** — Dashboard dropdown to switch between local and remote nodes
+- **Per-Node Data** — Isolated storage per node_id with thread-safe locking
+- **Node Cleanup** — `DELETE /api/node/<id>` to remove stale nodes
 
-**Core**
-- **Zero Dependencies** — Python standard library only, no pip install
-- **Standard / Advanced Mode** — Standard mode reads session files only (no debug config needed); `--advanced` unlocks log-based run events and message pipeline
-- **Separated Frontend** — Backend API + static files (`static/` directory)
-- **Dark Theme** — GitHub-dark inspired UI
-- **Cross-Platform** — Linux, macOS, Windows; Python 3.6+
+### Security & Authentication
+- **Dashboard Login** — Full-site login gate with API key; HMAC-signed session cookie (HttpOnly, SameSite=Strict, 24h)
+- **Bearer Token** — API access via `Authorization: Bearer <api_key>`
+- **Node Authentication** — Collectors authenticate with HMAC-SHA256(`api_key`, `openclaw-node:<node_id>`)
+- **Sensitive Data Masking** — Patterns (sk-*, ghp_*, AKIA*, hex/base64) and key names (key/token/secret/password) auto-masked in display
 
-**KPI Cards (3 rows)**
-- **Row 1: Core Metrics** — Model call count, avg inference latency, token throughput, cache hit ratio
-- **Row 2: Token Details** — Input/output tokens, cache read/write, inference ratio
-- **Row 3: Tool & Thinking** — Tool call count, tool errors, tool avg duration, thinking call ratio, avg thinking depth (chars)
+### Data Analytics
+- **KPI Cards (3 rows)** — Model calls, inference latency, token throughput, cache hit ratio, tool stats, thinking depth
+- **Inference Timing** — Per-call `inference_ms` from session.jsonl timestamps (standard mode, no debug logs needed)
+- **Tool Execution Stats** — Per-tool count, duration, success rate from `toolResult.details`
+- **Gateway Restart History** — Detects SHUTDOWN/TRIGGER/STARTUP/CRASH events
+- **Session Browser** — Browse all sessions with model, token, and timing details
+- **6 System Probes** — health, gateway_status, config_validate, doctor, update_status, models_status
 
-**Session Data Analytics (v3.0)**
-- **Inference Timing** — Per-call `inference_ms` and `tokens_per_sec` from session.jsonl timestamps (assistant timestamp − preceding user/tool timestamp)
-- **Tool Execution Stats** — Per-tool call count, total/avg duration, success rate, error count; sourced from `toolResult.details` (exitCode, durationMs)
-- **Thinking Depth** — Thinking call count, avg chars, thinking ratio per model call
-- **Conversation Tree** — Message chain visualization (user → assistant → toolCall → toolResult), yield/resume markers, model switch points
-- **System Events** — Multi-agent coordination events (`custom_message`), model snapshots
-- **Model Switching** — Tracks `model-snapshot` entries for provider/model changes over time
+### Remote Node Diagnostics (v4.x)
+- **Environment Variables** — Sortable table, keyword filter, masked sensitive values highlighted
+- **OpenClaw Config** — JSON tree viewer with syntax coloring
+- **Bash History** — Reverse-chronological command log (500 lines), searchable
+- **System Journal** — Last 24h journalctl logs (2000 lines), filterable
 
-**Gateway & Probes**
-- **Gateway Restart History** — Detects SHUTDOWN/TRIGGER/STARTUP/CRASH events; KPI cards + collapsible detail table
-- **Probe Panel** — 6 built-in probes with one-click execution and live status (blue pulse → green success / red failure)
-- **Probe List**: health, gateway\_status, config\_validate, doctor, update\_status, models\_status
+### Advanced Mode (requires debug logs)
+- **Run Analysis** — Paginated run list with Gantt charts, inference segments, tool arguments
+- **Event Timeline** — Filterable event log with category badges
+- **Message Pipeline** — Queue → Enqueue → Dequeue → Run → Processed visualization
 
-**Run Analysis (Advanced Mode)**
-- **Run List** — Paginated table with timing, model, channel, status, inference latency, tok/s
-- **Run Detail** — Expandable Gantt chart, inference segments, tool call arguments, token summary
-- **Message Pipeline** — Visual pipeline: Queued → Enqueue → Dequeue → Run → Processed
-- **Event Timeline** — Filterable paginated event log with category badges
+### Performance
+| Optimization | Effect |
+|-------------|--------|
+| TTL cache (10s) | API: 3.5s → 30ms |
+| Gzip transport | Collector payload: ~36% smaller |
+| Per-node locking | Parallel reads/writes across nodes |
+| Batch API | Single `/api/dashboard` returns all data |
+| ETag + 304 | Static file cache validation |
 
-**Performance**
-- **TTL Caching** — 10s TTL cache on summary, runs, restarts, tool stats; API response from 3.5s → 30ms
-- **Batch API** — Single `/api/dashboard` returns all data in one request
-- **Gzip Compression** — Auto gzip for >1KB responses (72-76% reduction)
-- **ETag Caching** — Static files support ETag + 304 Not Modified
-- **Skeleton Loading** — Placeholder cards for instant perceived performance
-
-**Other**
-- **Session File Coverage** — Scans `*.jsonl`, `*.jsonl.reset.*`, `*.jsonl.deleted.*` across all agents (e.g., 309 sessions from 7 agents)
-- **Auto Refresh** — 5s to 5min configurable intervals
-- **Access Token** — Optional `--token` for basic access control
-- **Graceful Errors** — Handles missing dirs, corrupt JSON, huge logs, port conflicts
-
-### CLI Mode
-
-Run probes directly from the terminal — no web server needed:
-
-```bash
-python3 openclaw-dashboard.py --cli                        # Run all 6 probes
-python3 openclaw-dashboard.py --cli --probe health         # Single probe
-python3 openclaw-dashboard.py --cli --probe gateway_status # Gateway status
-python3 openclaw-dashboard.py --cli --json                 # JSON output
-```
-
-**Available probes:**
-
-| Probe | Description | Timeout |
-|-------|-------------|---------|
-| `health` | Agent list, session counts, channel status | 30s |
-| `gateway_status` | PID, port, bind mode, service state, RPC check | 30s |
-| `config_validate` | Configuration file syntax and structure | 15s |
-| `doctor` | Full audit: security, skills, plugins, session locks, memory | 30s |
-| `update_status` | Installed version, update channel, available updates | 20s |
-| `models_status` | Default model, fallbacks, auth status, configured models | 20s |
-
-### Shell Script (`openclaw-diag.sh` v3.2)
-
-- **Multi-Agent Filtering** — `-a/--agent NAME` filters all stats by agent (e.g., main, waicode, wairesearch, waiqa)
-- **Agent Activity Distribution** — Summary includes per-agent inference count, avg latency, token throughput, and session count
-- **Session-Based Inference** — Per-call `inference_ms` and `tokens_per_sec` from session.jsonl (aligned with Python dashboard)
-- **Tool Execution Details** — Extracts `toolResult.details` (exitCode, durationMs, stderr summary)
-- **Tool Success Rate** — Per-tool success/failure stats
-- **Error List** — Up to 20 entries, no character truncation, time-sorted
-- **Terminal Diagnostic** — Colored output with run timelines
-- **Live Follow Mode** — Real-time log streaming (`-f`)
-- **Summary Mode** — Quick stats overview (`-s`)
-- **Token Tracking** — Per-inference token usage breakdown
-- **Duration Breakdown** — Visual bar charts for inference vs. tool time
-
-## Prerequisites
-
-### Standard Mode (default)
-
-No configuration changes needed. Reads session files (`~/.openclaw/agents/*/sessions/*.jsonl`) for:
-- Inference timing (per-call ms and tok/s)
-- Token usage (input, output, cache)
-- Tool execution stats
-- Thinking depth analysis
-- Model call details
-
-### Advanced Mode (`--advanced`)
-
-Adds log-based run events, message pipeline, and event timeline:
-
-```json
-// ~/.openclaw/openclaw.json
-{
-  "diagnostics": {
-    "enabled": true
-  },
-  "logging": {
-    "level": "debug"
-  }
-}
-```
-
-Then restart: `openclaw gateway restart`
+---
 
 ## Quick Start
 
-### Web Dashboard
+### Dashboard Server
 
 ```bash
-python3 openclaw-dashboard.py               # Standard mode (port 9090)
-python3 openclaw-dashboard.py --advanced     # Advanced mode
-python3 openclaw-dashboard.py --port 8080    # Custom port
-# Open http://127.0.0.1:9090
+# Standard mode (local diagnostics only)
+python3 openclaw-dashboard.py
+
+# With authentication (required for remote collectors)
+python3 openclaw-dashboard.py --api-key your-secret-key
+
+# Advanced mode (requires debug logs enabled)
+python3 openclaw-dashboard.py --advanced --api-key your-secret-key
+
+# Open http://localhost:9090
+```
+
+### Collector (on remote nodes)
+
+```bash
+# Interactive setup (first time)
+./openclaw-collector.sh
+
+# Daemon mode (background, periodic upload)
+./openclaw-collector.sh daemon
+
+# One-shot collection
+./openclaw-collector.sh once
+
+# Check status
+./openclaw-collector.sh status
+
+# Stop daemon
+./openclaw-collector.sh stop
 ```
 
 ### CLI Probes
 
 ```bash
-python3 openclaw-dashboard.py --cli          # All probes, human-readable
-python3 openclaw-dashboard.py --cli --json   # All probes, JSON output
-python3 openclaw-dashboard.py --cli --probe doctor  # Single probe
+python3 openclaw-dashboard.py --cli                        # All 6 probes
+python3 openclaw-dashboard.py --cli --probe health         # Single probe
+python3 openclaw-dashboard.py --cli --json                 # JSON output
 ```
 
 ### Shell Script
 
 ```bash
-./openclaw-diag.sh              # Today's runs
-./openclaw-diag.sh 2026-03-11   # Specific date
-./openclaw-diag.sh -f           # Live follow mode
-./openclaw-diag.sh -l 5         # Last 5 runs
-./openclaw-diag.sh -s           # Summary only
-./openclaw-diag.sh -a waicode 2026-03-19    # Filter by agent
-./openclaw-diag.sh -s -a main               # Summary for specific agent
-./openclaw-diag.sh -f -a waicode            # Live follow specific agent
+./openclaw-diag.sh                      # Today's diagnostics
+./openclaw-diag.sh -f                   # Live follow mode
+./openclaw-diag.sh -s                   # Summary only
+./openclaw-diag.sh -a waicode           # Filter by agent
+./openclaw-diag.sh 2026-03-19           # Specific date
 ```
+
+---
 
 ## 🚀 Deployment
 
-### Quick Start (Development)
-
-```bash
-python3 openclaw-dashboard.py                    # Standard mode, port 9090
-python3 openclaw-dashboard.py --advanced --port 8765  # Advanced mode, custom port
-```
-
-### systemd Service (Recommended for Production)
+### Option 1: systemd (Recommended for Production)
 
 One-click install:
 
 ```bash
-sudo ./deploy/install.sh
-sudo ./deploy/install.sh --port 8765 --advanced
-sudo ./deploy/install.sh --api-key my-secret
+sudo ./deploy/install.sh --api-key your-secret --port 9090
 ```
 
-Or manual setup:
+Management:
 
 ```bash
-# 1. Copy files
-sudo mkdir -p /opt/openclaw-diag
-sudo cp openclaw-dashboard.py /opt/openclaw-diag/
-sudo cp -r static/ /opt/openclaw-diag/
-
-# 2. Configure
-sudo mkdir -p /etc/openclaw-diag
-sudo cp deploy/openclaw-diag.env /etc/openclaw-diag/
-sudo vi /etc/openclaw-diag/openclaw-diag.env
-
-# 3. Install service
-sudo cp deploy/openclaw-diag.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now openclaw-diag
-
-# 4. Check status
 sudo systemctl status openclaw-diag
-journalctl -u openclaw-diag -f
+sudo systemctl restart openclaw-diag
+sudo journalctl -u openclaw-diag -f
 ```
 
-Uninstall: `sudo ./deploy/install.sh --uninstall`
+Uninstall:
 
-### Docker (Recommended for Isolation)
+```bash
+sudo ./deploy/install.sh --uninstall
+```
+
+### Option 2: Docker
 
 ```bash
 # Build and run
 docker compose up -d
 
-# With custom config
-OC_DIAG_PORT=8765 OC_DIAG_API_KEY=mysecret docker compose up -d
+# With configuration
+OC_DIAG_PORT=9090 OC_DIAG_API_KEY=mysecret docker compose up -d
 
 # Advanced mode
 OC_DIAG_ADVANCED=1 docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Stop
-docker compose down
 ```
 
-The Docker setup mounts host log and session directories as read-only volumes for local diagnostics.
+Docker mounts host log and session directories as read-only volumes for local diagnostics.
+
+### Option 3: Direct (Development)
+
+```bash
+python3 openclaw-dashboard.py --port 9090 --api-key your-key
+```
+
+---
+
+## API Reference
+
+### Authentication
+
+| Method | Use Case |
+|--------|----------|
+| Session Cookie | Browser access (via `/login` page) |
+| `Authorization: Bearer <api_key>` | API access and Collector uploads |
+| HMAC-SHA256 `node_token` | Collector node identity verification |
+
+### Dashboard Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/dashboard?date=` | Batch: summary + model_calls + restarts |
+| `GET /api/summary?date=` | KPI stats |
+| `GET /api/model_calls?date=&page=&per_page=` | Paginated model call records |
+| `GET /api/tool_stats?date=` | Per-tool stats |
+| `GET /api/sessions?date=` | Session browser |
+| `GET /api/restarts?date=` | Gateway restart history |
+| `GET /api/dates` | Available dates |
+| `GET /api/mode` | Current mode info |
+| `GET /api/system_info` | System metadata |
+| `POST /api/probe/<name>` | Execute probe |
+| `POST /api/probe/all` | Execute all probes |
+
+### Multi-Node Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/report` | Collector data upload (gzip + HMAC) |
+| `GET /api/nodes` | List all registered nodes |
+| `GET /api/node/<id>/dashboard` | Remote node dashboard data |
+| `GET /api/node/<id>/summary` | Remote node KPI summary |
+| `GET /api/node/<id>/model_calls` | Remote node model calls |
+| `GET /api/node/<id>/sessions` | Remote node sessions |
+| `GET /api/node/<id>/tool_stats` | Remote node tool stats |
+| `GET /api/node/<id>/env_vars` | Remote node environment variables |
+| `GET /api/node/<id>/openclaw_config` | Remote node OpenClaw config |
+| `GET /api/node/<id>/bash_history` | Remote node command history |
+| `GET /api/node/<id>/journalctl` | Remote node system journal |
+| `DELETE /api/node/<id>` | Remove node data |
+
+### Advanced Mode Endpoints (additional)
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/events?date=` | Event summary + message pipeline |
+| `GET /api/events/timeline?date=` | Paginated event timeline |
+| `GET /api/events/errors?date=` | Error list with filtering |
+| `GET /api/runs?date=&page=&per_page=` | Run list |
+| `GET /api/run/<id>?date=` | Run detail with Gantt chart data |
+
+All endpoints support `date` parameter (defaults to latest available). JSON responses with optional gzip.
+
+---
 
 ## Command Line Options
 
@@ -297,160 +296,87 @@ The Docker setup mounts host log and session directories as read-only volumes fo
 |--------|---------|-------------|
 | `--port PORT` | `9090` | Listen port |
 | `--host HOST` | `0.0.0.0` | Bind address |
+| `--api-key KEY` | *(none)* | Authentication key (enables login gate + collector auth) |
+| `--advanced` | `false` | Enable advanced mode (requires debug logs) |
+| `--no-browser` | `false` | Don't auto-open browser |
+| `--no-local` | `false` | Pure remote mode (no local data) |
 | `--log-dir DIR` | auto-detect | Log directory |
 | `--sessions-dir DIR` | auto-detect | Session files directory |
-| `--token TOKEN` | *(none)* | Access token |
-| `--no-browser` | `false` | Don't auto-open browser |
-| `--advanced` | `false` | Enable advanced diagnostics (requires debug logs) |
+| `--token TOKEN` | *(none)* | Legacy access token |
 | `--cli` | `false` | CLI mode (no web server) |
-| `--probe NAME` | `all` | CLI: specific probe (`health`, `gateway_status`, `config_validate`, `doctor`, `update_status`, `models_status`, `all`) |
+| `--probe NAME` | `all` | CLI: specific probe |
 | `--json` | `false` | CLI: JSON output format |
 
-### Auto-Detection Order
+---
 
-**Log directory:** `--log-dir` → `$OPENCLAW_LOG_DIR` → `/tmp/openclaw/` → `~/Library/Logs/openclaw/` → `%TEMP%/openclaw/`
+## Prerequisites
 
-**Session directory:** `--sessions-dir` → `$OPENCLAW_SESSIONS_DIR` → `~/.openclaw/agents/*/sessions/` → `$OPENCLAW_STATE_DIR/agents/*/sessions/`
+### Standard Mode (default)
+No configuration needed. Reads `~/.openclaw/agents/*/sessions/*.jsonl`.
 
-## API Reference
-
-### Standard Mode Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Dashboard page |
-| `GET /api/dashboard?date=` | **Batch**: summary + model\_calls + restarts (+ events/runs/errors in advanced) |
-| `GET /api/dates` | Available log dates |
-| `GET /api/summary?date=` | KPI stats: model calls, inference timing, tokens, cache, tools, thinking |
-| `GET /api/model_calls?date=&page=&per_page=` | Paginated model call records from session files |
-| `GET /api/tool_stats?date=` | Per-tool call count, duration, success rate |
-| `GET /api/restarts?date=` | Gateway restart history |
-| `GET /api/system_info` | Python version, memory, config path, total model calls |
-| `GET /api/mode` | Current mode (standard/advanced), data source availability |
-| `GET /api/probes` | List available probes |
-| `POST /api/probe/<name>` | Execute a single probe |
-| `POST /api/probe/all` | Execute all probes |
-
-### Advanced Mode Endpoints (additional)
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/events?date=` | Event summary + message pipeline stats |
-| `GET /api/events/timeline?date=&page=&per_page=&category=` | Paginated event timeline with category filter |
-| `GET /api/events/webhooks?date=` | Webhook events |
-| `GET /api/events/messages?date=` | Message queue events |
-| `GET /api/events/errors?date=&severity=&type=` | Error list with filtering |
-| `GET /api/runs?date=&page=&per_page=` | Paginated run list |
-| `GET /api/run/<id>?date=` | Run detail: model\_calls, gantt, tools, inference segments |
-
-All endpoints support `date` parameter (defaults to latest available date). Responses: `Content-Type: application/json; charset=utf-8`, gzip supported.
-
-## Architecture
-
-### Data Sources
-
-| Source | Used In | Data |
-|--------|---------|------|
-| **Session files** `~/.openclaw/agents/*/sessions/*.jsonl` | Standard + Advanced | Model calls, tokens, inference timing, tool details, thinking, conversation tree |
-| **Log files** `/tmp/openclaw/openclaw-YYYY-MM-DD.log` | Advanced only | Run events, message pipeline, event timeline |
-| **OpenClaw CLI** | Both modes | Live probes (health, doctor, gateway status, etc.) |
-
-Session file scanning covers: `*.jsonl`, `*.jsonl.reset.*`, `*.jsonl.deleted.*` across all agent directories.
-
-### Inference Timing (Session-Based)
-
-```
-user message (timestamp T1)
-    ↓
-assistant response (timestamp T2)
-    ↓
-inference_ms = T2 - T1
-tokens_per_sec = output_tokens / (inference_ms / 1000)
+### Advanced Mode (`--advanced`)
+Requires in `~/.openclaw/openclaw.json`:
+```json
+{
+  "diagnostics": { "enabled": true },
+  "logging": { "level": "debug" }
+}
 ```
 
-- Extracts timestamps from consecutive message pairs in session.jsonl
-- Works in standard mode — no debug logs required
-- Precise to individual LLM calls (not run-level estimates)
-
-### Gateway Restart Detection
-
-Identifies 4 event types from log files:
-- **SHUTDOWN** — Graceful SIGTERM-initiated shutdown
-- **TRIGGER** — External restart trigger (e.g., `openclaw gateway restart`)
-- **STARTUP** — Gateway start event
-- **CRASH** — Unexpected termination (no preceding SIGTERM)
-
-### Performance
-
-| Optimization | Effect |
-|-------------|--------|
-| TTL cache (10s) | summary/runs/restarts/tool\_stats: 3.5s → 30ms |
-| Batch API | 3 HTTP requests → 1 |
-| Gzip | app.js 28KB→8KB, API ~76% smaller |
-| ETag + 304 | Static file cache validation |
-| Critical CSS inline | Faster first paint |
-| Session preload | Background thread loads session data on startup |
-
-**Benchmarks (2 vCPU, 4GB RAM, 309 sessions, 963 model calls):**
-
-| Metric | Result |
-|--------|--------|
-| All 15 endpoints < 500ms (cached) | ✅ |
-| `/api/dashboard` (cached) | ~30ms |
-| 10x concurrent dashboard | avg 350ms |
-| Full page load (parallel) | ~1s |
-
-## Compatibility
-
-- **Python**: 3.6+
-- **OS**: Linux, macOS, Windows
-- **Browser**: Chrome, Firefox, Safari, Edge
+---
 
 ## File Structure
 
 ```
 openclaw-diag-dashbaard/
-├── openclaw-dashboard.py   # Web dashboard + CLI (3900+ lines)
-├── openclaw-collector.sh   # Remote collector script
-├── start-dashboard.sh      # Interactive start script
-├── Dockerfile              # Docker image definition
-├── docker-compose.yml      # Docker Compose config
+├── openclaw-dashboard.py      # Dashboard Server (4000+ lines)
+├── openclaw-collector.sh      # Remote Collector script
+├── openclaw-diag.sh           # Standalone shell diagnostics
+├── start-dashboard.sh         # Interactive start helper
+├── Dockerfile                 # Docker image
+├── docker-compose.yml         # Docker Compose config
 ├── static/
-│   ├── index.html          # Dashboard layout
-│   ├── app.js              # Frontend logic (1400+ lines)
-│   └── style.css           # Dark theme styles
+│   ├── index.html             # Dashboard layout
+│   ├── app.js                 # Frontend logic (1500+ lines)
+│   └── style.css              # Dark theme styles
 ├── deploy/
-│   ├── install.sh          # One-click installer
+│   ├── install.sh             # One-click systemd installer
 │   ├── openclaw-diag.service  # systemd unit file
-│   └── openclaw-diag.env   # Environment config template
+│   └── openclaw-diag.env      # Environment config template
 ├── docs/
-│   └── screenshots/        # Dashboard screenshots
-├── README.md               # English documentation
-└── README_zh.md            # 中文文档
+│   └── screenshots/           # Dashboard screenshots
+├── README.md
+└── README_zh.md
 ```
+
+## Compatibility
+
+- **Python**: 3.7+
+- **OS**: Linux, macOS, Windows
+- **Browser**: Chrome, Firefox, Safari, Edge
 
 ## Changelog
 
+### v4.2 (2026-04-01)
+- **Multi-Node Architecture** — Collector/Server distributed model with HTTP report endpoint
+- **Collector** — 12 data sources, gzip compression, HMAC-SHA256 node auth, daemon/once/loop modes
+- **Dashboard Login** — Full-site API key authentication with HMAC-signed session cookies
+- **Sensitive Data** — Environment variables, OpenClaw config, bash history, journalctl collection and display
+- **Per-Node Locking** — Thread-safe concurrent access across nodes
+- **Node Management** — Auto-register, online/offline status, DELETE cleanup
+- **Bearer Auth** — GET endpoints accept Bearer token alongside session cookie
+- **Deployment** — systemd service, Docker, one-click install script
+
 ### v3.2 (2026-03-20)
+- **Multi-Agent Filtering** (`-a/--agent`) — Per-agent diagnostics in batch, summary, and follow modes
+- **Agent Activity Distribution** — Per-agent inference count, latency, throughput, session count
+- **Bug Fixes** — Date filter accuracy, agent-scoped statistics, virtual Run date filtering
 
-**New Features**
-- **Multi-Agent Filtering** (`-a/--agent NAME`) — Filter diagnostics by agent name (main, waicode, wairesearch, waiqa, etc.)
-  - Batch analysis: filters runs, sessions, errors, and messages via session_uuid→agent mapping
-  - Live follow mode (`-f`): filters event stream by agent
-  - Summary mode (`-s`): scoped stats for a single agent
-- **Agent Activity Distribution** — Summary now includes per-agent breakdown: inference count, avg latency, token throughput, session count
-
-**Bug Fixes**
-- **[P1]** Fixed date filter using ±1 day loose matching, causing ~35% stats inflation. Now uses strict UTC date matching
-- **[P2]** Fixed agent filter not covering error/message statistics
-- **[P3]** Fixed virtual Run mode not applying date filter to global statistics
-
-### v3.0
-
-- Session-first architecture — all analytics driven by `session.jsonl`
+### v3.0 (2026-03-19)
+- Session-first architecture — all analytics from `session.jsonl`
 - Tool execution stats from `toolResult.details`
 - Thinking depth analysis
-- No debug log configuration needed for standard mode
+- No debug config needed for standard mode
 
 ## License
 

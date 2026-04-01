@@ -1,295 +1,292 @@
 # OpenClaw 诊断面板
 
-基于 Web 的 [OpenClaw](https://github.com/nicepkg/openclaw) AI 代理平台性能诊断工具。零外部依赖，纯 Python 标准库实现。
+面向 [OpenClaw](https://github.com/nicepkg/openclaw) AI Agent 平台的分布式诊断工具。包含 **Dashboard Server**（可视化面板）和 **Collector**（远程采集端）。零外部依赖 — 纯 Python 标准库。
 
-> **v3.2** — 多 Agent 过滤支持。新增 `-a/--agent` 参数，支持按 Agent 进行批量分析、摘要和实时跟踪。修复日期过滤准确性和 Agent 范围统计的关键 Bug。
+> **v4.2** — 多节点分布式架构，Collector/Server 模型，gzip 传输，HMAC 节点认证，逐节点锁，敏感数据采集（环境变量、配置、命令历史、系统日志），全站登录门禁，TTL 缓存 API。
 
-## 📸 效果展示
+## 架构
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  节点 A (新加坡)  │     │  节点 B (香港)    │     │  节点 C (美国)    │
+│  Collector      │     │  Collector      │     │  Collector      │
+│  openclaw-      │     │  openclaw-      │     │  openclaw-      │
+│  collector.sh   │     │  collector.sh   │     │  collector.sh   │
+└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+         │ HTTPS + gzip          │                       │
+         │ + HMAC 认证            │                       │
+         └───────────────┬───────┴───────────────────────┘
+                         ▼
+              ┌─────────────────────┐
+              │  Dashboard Server   │
+              │  openclaw-          │
+              │  dashboard.py       │
+              │  (Web UI + API)     │
+              └─────────────────────┘
+```
+
+## 📸 截图
 
 ### Dashboard 概览 — KPI 与系统探测
 
-![Dashboard Overview](docs/screenshots/dashboard-overview.png)
+![Dashboard 概览](docs/screenshots/dashboard-overview.png)
 
-*5 行 KPI 卡片：核心指标（Run 总数、推理占比、Token 吞吐量）、Token 详情、消息流水线、工具与 Thinking 统计。下方为 6 项系统探测面板。*
+*5 行 KPI 卡片 + 6 个一键系统探测面板。*
 
 ### 标准模式 — 完整页面
 
-![Dashboard Standard](docs/screenshots/dashboard-standard.png)
+![标准模式](docs/screenshots/dashboard-standard.png)
 
-*标准模式完整视图：KPI 概览 → 系统探测 → Gateway 重启历史 → 模型调用记录 → 会话浏览器 → 错误追踪。零配置即可使用。*
+*KPI 概览 → 探测 → 重启历史 → 模型调用 → 会话浏览 → 错误追踪。零配置即用。*
 
-### 高级诊断模式 — 完整页面
+### 高级模式 — 完整页面
 
-![Dashboard Advanced](docs/screenshots/dashboard-advanced.png)
+![高级模式](docs/screenshots/dashboard-advanced.png)
 
-*高级模式在标准模式基础上，额外提供 Run 级别详情、事件时间线和调试日志分析。*
+*在标准模式基础上增加 Run 级详情、事件时间线、debug 日志分析。*
 
-### CLI 命令行模式
+### CLI 诊断
 
 ```
 🦞 OpenClaw 诊断工具 v3.2.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🏥 健康检查 ... ✅ (9.9s)
-  Agent: 7 个 (Coordinator, Developer, Designer, Researcher, QA, ...)
-    main: 49 sessions | waicode: 8 sessions | waidesign: 4 sessions ...
-  Session 总数: 49
-
-🌐 Gateway 状态 ... ✅ (12.0s)
-  PID: 806521 | 端口: 18789 (loopback) | 状态: active/running | RPC: ✅ 正常
-
-✅ 配置校验 ... ✅ (4.3s)
-  Config valid: ~/.openclaw/openclaw.json
-
-🔬 全面诊断 ... ✅ (17.9s)
-  ┌  OpenClaw doctor
-  ◇  Startup optimization ──────────────────────────────────╮
-  │  - NODE_COMPILE_CACHE is not set                        │
-  │  - OPENCLAW_NO_RESPAWN is not set to 1                  │
-  ├─────────────────────────────────────────────────────────╯
+🏥 健康检查 ... ✅ (9.9s)    🌐 Gateway 状态 ... ✅ (12.0s)
+✅ 配置校验 ... ✅ (4.3s)    🔬 全面诊断 ... ✅ (17.9s)
+📦 版本状态 ... ✅ (10.5s)   🤖 模型状态 ... ✅ (10.6s)
 ```
 
-### Shell 脚本 — Run 诊断报告
+---
 
-```
-[OpenClaw 诊断报告]
-日期: 2026-03-19
+## 组件
 
-====================================================================
-                             [摘要统计]
-====================================================================
-  Run 总数:        139
-  工具调用总数:    1237
-  工具调用:        1267 次 (失败 1, 成功率 100%)
-  工具平均耗时:    876ms
-  Top 工具:        exec(614), read(313), edit(195)
+### 1. Dashboard Server（`openclaw-dashboard.py`）
 
-  推理延迟:    平均 9.4s  (基于 session 时间戳, 1304 次调用)
-  Token 吞吐:  平均 32.4 tok/s  (基于 session 时间戳, 1295 次调用)
+中心 Web 服务：
+- 采集**本地**诊断数据（session 文件、日志、CLI 探测）
+- 接收**远程** Collector 通过 HTTP API 上报的数据
+- 提供 Web 可视化面板 + REST API
+- 支持 CLI 探测模式（无需启动 Web 服务）
 
-  Agent 活动分布:
-    clawdoctor      推理  67次  平均     9.0s  吞吐 29.9 tok/s  会话 3
-    main            推理 884次  平均     8.6s  吞吐 36.0 tok/s  会话 7
-    waicode         推理 708次  平均     9.1s  吞吐 41.5 tok/s  会话 18
-    waiqa           推理  25次  平均     8.5s  吞吐 49.6 tok/s  会话 1
-    wairesearch     推理  23次  平均    15.6s  吞吐 47.6 tok/s  会话 1
+### 2. Collector（`openclaw-collector.sh`）
 
-  工具使用排行:
-    exec     588次  平均耗时 1.5s
-    read     311次  平均耗时 56ms
-    edit     195次  平均耗时 38ms
-    ...
-```
+运行在各 OpenClaw 节点的轻量采集脚本：
+- 采集 12 类数据源（会话指标、工具统计、重启事件、环境变量、配置、命令历史、系统日志等）
+- gzip 压缩 + HMAC-SHA256 认证后上传到 Dashboard Server
+- 支持 daemon / once / loop 运行模式
+- 启动时自动开启 `diagnostics.enabled` + `logging.level=debug`，退出时恢复
+
+### 3. Shell 诊断（`openclaw-diag.sh`）
+
+独立终端诊断工具：
+- 多 Agent 过滤（`-a/--agent NAME`）
+- 实时跟踪（`-f`）、摘要模式（`-s`）
+- 基于 session 的推理耗时和 Token 吞吐量
+- 零服务依赖 — 离线可用
+
+---
 
 ## 功能特性
 
-### Web 面板 (`openclaw-dashboard.py`)
+### 多节点管理
+- **节点注册** — 首次上报自动注册；在线/离线状态追踪（30 分钟超时）
+- **节点选择器** — Dashboard 下拉切换本地/远程节点
+- **节点隔离** — 每个 node_id 独立存储，线程安全锁
+- **节点清理** — `DELETE /api/node/<id>` 移除过期节点
 
-**核心**
-- **零依赖** — 仅使用 Python 标准库，无需 pip install
-- **标准/高级模式** — 标准模式只读 session 文件（无需 debug 配置）；`--advanced` 解锁日志级 Run 事件和消息流水线
-- **前后端分离** — 后端 API + 静态文件 (`static/` 目录)
-- **暗色主题** — GitHub Dark 风格 UI
-- **跨平台** — Linux、macOS、Windows；Python 3.6+
+### 安全与认证
+- **Dashboard 登录** — 全站登录门禁，API Key 认证，HMAC 签名 Cookie（HttpOnly、SameSite=Strict、24h）
+- **Bearer Token** — API 访问 `Authorization: Bearer <api_key>`
+- **节点认证** — Collector 使用 HMAC-SHA256(`api_key`, `openclaw-node:<node_id>`) 身份验证
+- **敏感数据脱敏** — 自动匹配模式（sk-*、ghp_*、AKIA*）和关键字（key/token/secret/password）脱敏显示
 
-**KPI 卡片（3 行）**
-- **第一行：核心指标** — 模型调用数、平均推理延迟、Token 吞吐量、缓存命中率
-- **第二行：Token 详情** — 输入/输出 Token、缓存读写、推理占比
-- **第三行：工具与思考** — 工具调用数、工具错误、工具平均耗时、Thinking 调用占比、平均思考深度（字符数）
+### 数据分析
+- **KPI 卡片（3 行）** — 模型调用、推理延迟、Token 吞吐、缓存命中率、工具统计、思考深度
+- **推理耗时** — 从 session.jsonl 时间戳逐调用计算（标准模式，无需 debug 日志）
+- **工具执行统计** — 逐工具调用次数、耗时、成功率（`toolResult.details`）
+- **Gateway 重启历史** — 检测 SHUTDOWN/TRIGGER/STARTUP/CRASH 事件
+- **会话浏览器** — 浏览所有会话的模型、Token、耗时详情
+- **6 项系统探测** — health、gateway_status、config_validate、doctor、update_status、models_status
 
-**Session 数据分析 (v3.0)**
-- **推理耗时** — 从 session.jsonl 时间戳精确计算每次 LLM 调用的 `inference_ms` 和 `tokens_per_sec`（assistant 时间戳 − 前一条 user/tool 时间戳）
-- **工具执行统计** — 按工具分组：调用次数、总耗时/平均耗时、成功率、错误数；数据来源 `toolResult.details`（exitCode、durationMs）
-- **思考深度** — Thinking 调用次数、平均字符数、每次调用的 Thinking 占比
-- **对话树** — 消息链路可视化（user → assistant → toolCall → toolResult）、yield/resume 标记、模型切换点
-- **系统事件** — 多代理协作事件（`custom_message`）、模型快照
-- **模型切换追踪** — 追踪 `model-snapshot` 条目，记录 provider/model 变更历史
+### 远程节点诊断（v4.x）
+- **环境变量** — 可排序表格、关键字筛选、敏感值高亮
+- **OpenClaw 配置** — JSON 树形查看器，语法着色
+- **命令历史** — 倒序命令日志（500 行），支持搜索
+- **系统日志** — 最近 24h journalctl（2000 行），可筛选
 
-**Gateway 与探测**
-- **Gateway 重启历史** — 检测 SHUTDOWN/TRIGGER/STARTUP/CRASH 四种事件；KPI 卡片 + 可折叠详情表格
-- **探测面板** — 6 项内置探测，一键执行，实时状态指示（蓝色脉冲 → 绿色成功 / 红色失败）
-- **探测列表**：health、gateway\_status、config\_validate、doctor、update\_status、models\_status
+### 高级模式（需 debug 日志）
+- **Run 分析** — 分页 Run 列表、甘特图、推理分段、工具参数
+- **事件时间线** — 可筛选分页事件日志
+- **消息管道** — 队列 → 入队 → 出队 → Run → 处理 可视化
 
-**Run 分析（高级模式）**
-- **Run 列表** — 分页表格：耗时、模型、通道、状态、推理延迟、tok/s
-- **Run 详情** — 可展开甘特图、推理分段、工具参数、Token 汇总
-- **消息流水线** — 可视化管道：Queued → Enqueue → Dequeue → Run → Processed
-- **事件时间线** — 可过滤的分页事件日志，含分类标签
+### 性能优化
+| 优化项 | 效果 |
+|--------|------|
+| TTL 缓存 (10s) | API: 3.5s → 30ms |
+| gzip 传输 | Collector 负载压缩 ~36% |
+| 逐节点锁 | 跨节点并行读写 |
+| 批量 API | `/api/dashboard` 一次返回全部数据 |
+| ETag + 304 | 静态文件缓存验证 |
 
-**性能优化**
-- **TTL 缓存** — summary、runs、restarts、tool\_stats 10 秒 TTL 缓存；API 响应从 3.5s 降至 30ms
-- **批量接口** — `/api/dashboard` 一次返回全部数据
-- **Gzip 压缩** — 自动压缩 >1KB 响应（节省 72-76%）
-- **ETag 缓存** — 静态文件 304 缓存验证
-- **骨架屏** — 首屏加载占位卡片，提升感知性能
-
-**其他**
-- **Session 文件覆盖** — 扫描 `*.jsonl`、`*.jsonl.reset.*`、`*.jsonl.deleted.*`（例如 7 个 Agent 共 309 个 session 文件）
-- **自动刷新** — 5s 到 5min 可选间隔
-- **访问令牌** — 可选 `--token` 参数
-- **优雅容错** — 缺失目录、损坏 JSON、超大日志、端口冲突均可存活
-
-### CLI 模式
-
-无需启动 Web 服务，直接在终端执行探测：
-
-```bash
-python3 openclaw-dashboard.py --cli                        # 执行全部 6 项探测
-python3 openclaw-dashboard.py --cli --probe health         # 单项探测
-python3 openclaw-dashboard.py --cli --probe gateway_status # Gateway 状态
-python3 openclaw-dashboard.py --cli --json                 # JSON 格式输出
-```
-
-**可用探测项：**
-
-| 探测项 | 说明 | 超时 |
-|--------|------|------|
-| `health` | Agent 列表、Session 数量、频道状态 | 30s |
-| `gateway_status` | PID、端口、绑定模式、服务状态、RPC 检测 | 30s |
-| `config_validate` | 配置文件语法和结构校验 | 15s |
-| `doctor` | 全面审计：安全、技能、插件、会话锁、内存 | 30s |
-| `update_status` | 安装版本、更新通道、可用更新 | 20s |
-| `models_status` | 默认模型、Fallback、认证状态、已配置模型 | 20s |
-
-### Shell 脚本 (`openclaw-diag.sh` v3.2)
-
-- **多 Agent 过滤** — `-a/--agent NAME` 按 Agent 过滤所有统计数据（如 main、waicode、wairesearch、waiqa）
-- **Agent 活动分布** — 摘要新增每个 Agent 的推理次数、平均延迟、Token 吞吐量、会话数
-- **Session 驱动推理耗时** — 从 session.jsonl 精确计算每次 LLM 调用的 `inference_ms` 和 `tokens_per_sec`（与 Python 版对齐）
-- **工具执行详情** — 提取 `toolResult.details`（exitCode、durationMs、stderr 摘要）
-- **工具成功率** — 按工具分组的成功/失败统计
-- **错误列表** — 最多 20 条，无字符截断，按时间倒序
-- **终端诊断** — 彩色输出，Run 时间线
-- **实时跟踪** — `-f` 模式实时流式输出
-- **摘要模式** — `-s` 快速统计概览
-- **Token 统计** — 每次推理的 Token 用量明细
-- **耗时分布** — 可视化条形图：推理 vs 工具时间
-
-## 前置条件
-
-### 标准模式（默认）
-
-无需任何配置修改。自动读取 session 文件（`~/.openclaw/agents/*/sessions/*.jsonl`），提供：
-- 推理耗时（每次调用的 ms 和 tok/s）
-- Token 用量（输入、输出、缓存）
-- 工具执行统计
-- 思考深度分析
-- 模型调用详情
-
-### 高级模式（`--advanced`）
-
-额外支持日志级 Run 事件、消息流水线和事件时间线：
-
-```json
-// ~/.openclaw/openclaw.json
-{
-  "diagnostics": {
-    "enabled": true
-  },
-  "logging": {
-    "level": "debug"
-  }
-}
-```
-
-然后重启：`openclaw gateway restart`
+---
 
 ## 快速开始
 
-### Web 面板
+### Dashboard Server
 
 ```bash
-python3 openclaw-dashboard.py               # 标准模式（端口 9090）
-python3 openclaw-dashboard.py --advanced     # 高级模式
-python3 openclaw-dashboard.py --port 8080    # 自定义端口
-# 打开 http://127.0.0.1:9090
+# 标准模式（仅本地诊断）
+python3 openclaw-dashboard.py
+
+# 带认证（远程 Collector 必须）
+python3 openclaw-dashboard.py --api-key your-secret-key
+
+# 高级模式
+python3 openclaw-dashboard.py --advanced --api-key your-secret-key
+
+# 访问 http://localhost:9090
+```
+
+### Collector（远程节点）
+
+```bash
+# 交互式配置（首次使用）
+./openclaw-collector.sh
+
+# 守护进程模式
+./openclaw-collector.sh daemon
+
+# 单次采集
+./openclaw-collector.sh once
+
+# 查看状态 / 停止
+./openclaw-collector.sh status
+./openclaw-collector.sh stop
 ```
 
 ### CLI 探测
 
 ```bash
-python3 openclaw-dashboard.py --cli          # 全部探测，人类可读输出
-python3 openclaw-dashboard.py --cli --json   # 全部探测，JSON 格式
-python3 openclaw-dashboard.py --cli --probe doctor  # 单项探测
+python3 openclaw-dashboard.py --cli                        # 全部 6 项探测
+python3 openclaw-dashboard.py --cli --probe health         # 单项探测
+python3 openclaw-dashboard.py --cli --json                 # JSON 输出
 ```
 
-### Shell 脚本
+### Shell 诊断
 
 ```bash
-./openclaw-diag.sh              # 今天的 Run
-./openclaw-diag.sh 2026-03-11   # 指定日期
-./openclaw-diag.sh -f           # 实时跟踪
-./openclaw-diag.sh -l 5         # 最近 5 个 Run
-./openclaw-diag.sh -s           # 仅摘要
-./openclaw-diag.sh -a waicode 2026-03-19    # 按 Agent 过滤
-./openclaw-diag.sh -s -a main               # 指定 Agent 的摘要
-./openclaw-diag.sh -f -a waicode            # 实时跟踪指定 Agent
+./openclaw-diag.sh                      # 今日诊断
+./openclaw-diag.sh -f                   # 实时跟踪
+./openclaw-diag.sh -s                   # 仅摘要
+./openclaw-diag.sh -a waicode           # 按 Agent 过滤
+./openclaw-diag.sh 2026-03-19           # 指定日期
 ```
 
-## 🚀 部署方式
+---
 
-### 快速启动（开发环境）
+## 🚀 部署
 
-```bash
-python3 openclaw-dashboard.py                    # 标准模式，端口 9090
-python3 openclaw-dashboard.py --advanced --port 8765  # 高级模式，自定义端口
-```
-
-### systemd 常驻服务（推荐生产环境）
+### 方式一：systemd 常驻（推荐生产环境）
 
 一键安装：
 
 ```bash
-sudo ./deploy/install.sh
-sudo ./deploy/install.sh --port 8765 --advanced
-sudo ./deploy/install.sh --api-key my-secret
+sudo ./deploy/install.sh --api-key your-secret --port 9090
 ```
 
-或手动安装：
+管理：
 
 ```bash
-# 1. 复制文件
-sudo mkdir -p /opt/openclaw-diag
-sudo cp openclaw-dashboard.py /opt/openclaw-diag/
-sudo cp -r static/ /opt/openclaw-diag/
-
-# 2. 配置
-sudo mkdir -p /etc/openclaw-diag
-sudo cp deploy/openclaw-diag.env /etc/openclaw-diag/
-sudo vi /etc/openclaw-diag/openclaw-diag.env
-
-# 3. 安装服务
-sudo cp deploy/openclaw-diag.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now openclaw-diag
-
-# 4. 检查状态
 sudo systemctl status openclaw-diag
-journalctl -u openclaw-diag -f
+sudo systemctl restart openclaw-diag
+sudo journalctl -u openclaw-diag -f
 ```
 
-卸载：`sudo ./deploy/install.sh --uninstall`
-
-### Docker 部署（推荐隔离环境）
+卸载：
 
 ```bash
-# 构建并启动
+sudo ./deploy/install.sh --uninstall
+```
+
+### 方式二：Docker
+
+```bash
+# 构建并运行
 docker compose up -d
 
 # 自定义配置
-OC_DIAG_PORT=8765 OC_DIAG_API_KEY=mysecret docker compose up -d
+OC_DIAG_PORT=9090 OC_DIAG_API_KEY=mysecret docker compose up -d
 
 # 高级模式
 OC_DIAG_ADVANCED=1 docker compose up -d
-
-# 查看日志
-docker compose logs -f
-
-# 停止
-docker compose down
 ```
 
-Docker 部署会将宿主机的日志和 session 目录以只读方式挂载，用于本地诊断。
+Docker 将宿主机日志和 session 目录以只读方式挂载用于本地诊断。
+
+### 方式三：直接运行（开发调试）
+
+```bash
+python3 openclaw-dashboard.py --port 9090 --api-key your-key
+```
+
+---
+
+## API 参考
+
+### 认证方式
+
+| 方式 | 场景 |
+|------|------|
+| Session Cookie | 浏览器访问（通过 `/login` 页面） |
+| `Authorization: Bearer <api_key>` | API 访问和 Collector 上报 |
+| HMAC-SHA256 `node_token` | Collector 节点身份验证 |
+
+### Dashboard 端点
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/dashboard?date=` | 批量：摘要 + 模型调用 + 重启 |
+| `GET /api/summary?date=` | KPI 统计 |
+| `GET /api/model_calls?date=&page=&per_page=` | 分页模型调用记录 |
+| `GET /api/tool_stats?date=` | 逐工具统计 |
+| `GET /api/sessions?date=` | 会话浏览器 |
+| `GET /api/restarts?date=` | Gateway 重启历史 |
+| `GET /api/dates` | 可用日期列表 |
+| `GET /api/mode` | 当前模式信息 |
+| `GET /api/system_info` | 系统元数据 |
+| `POST /api/probe/<name>` | 执行探测 |
+| `POST /api/probe/all` | 执行全部探测 |
+
+### 多节点端点
+
+| 端点 | 说明 |
+|------|------|
+| `POST /api/report` | Collector 数据上报（gzip + HMAC） |
+| `GET /api/nodes` | 列出所有已注册节点 |
+| `GET /api/node/<id>/dashboard` | 远程节点面板数据 |
+| `GET /api/node/<id>/summary` | 远程节点 KPI 摘要 |
+| `GET /api/node/<id>/model_calls` | 远程节点模型调用 |
+| `GET /api/node/<id>/sessions` | 远程节点会话 |
+| `GET /api/node/<id>/tool_stats` | 远程节点工具统计 |
+| `GET /api/node/<id>/env_vars` | 远程节点环境变量 |
+| `GET /api/node/<id>/openclaw_config` | 远程节点 OpenClaw 配置 |
+| `GET /api/node/<id>/bash_history` | 远程节点命令历史 |
+| `GET /api/node/<id>/journalctl` | 远程节点系统日志 |
+| `DELETE /api/node/<id>` | 删除节点数据 |
+
+### 高级模式端点（额外）
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/events?date=` | 事件摘要 + 消息管道 |
+| `GET /api/events/timeline?date=` | 分页事件时间线 |
+| `GET /api/events/errors?date=` | 错误列表（可筛选） |
+| `GET /api/runs?date=&page=&per_page=` | Run 列表 |
+| `GET /api/run/<id>?date=` | Run 详情（甘特图数据） |
+
+所有端点支持 `date` 参数（默认最近可用日期）。JSON 响应，支持 gzip。
+
+---
 
 ## 命令行参数
 
@@ -297,161 +294,88 @@ Docker 部署会将宿主机的日志和 session 目录以只读方式挂载，�
 |------|--------|------|
 | `--port PORT` | `9090` | 监听端口 |
 | `--host HOST` | `0.0.0.0` | 绑定地址 |
-| `--log-dir DIR` | 自动检测 | 日志目录 |
-| `--sessions-dir DIR` | 自动检测 | 会话文件目录 |
-| `--token TOKEN` | 无 | 访问令牌 |
+| `--api-key KEY` | *(无)* | 认证密钥（启用登录门禁 + Collector 认证） |
+| `--advanced` | `false` | 启用高级模式（需 debug 日志） |
 | `--no-browser` | `false` | 不自动打开浏览器 |
-| `--advanced` | `false` | 启用高级诊断模式（需要 debug 日志） |
+| `--no-local` | `false` | 纯远程模式（不加载本地数据） |
+| `--log-dir DIR` | 自动检测 | 日志目录 |
+| `--sessions-dir DIR` | 自动检测 | Session 文件目录 |
+| `--token TOKEN` | *(无)* | 旧版访问令牌 |
 | `--cli` | `false` | CLI 模式（不启动 Web 服务） |
-| `--probe NAME` | `all` | CLI: 指定探测项（`health`、`gateway_status`、`config_validate`、`doctor`、`update_status`、`models_status`、`all`） |
-| `--json` | `false` | CLI: JSON 格式输出 |
+| `--probe NAME` | `all` | CLI：指定探测项 |
+| `--json` | `false` | CLI：JSON 输出格式 |
 
-### 路径自动检测
+---
 
-**日志目录：** `--log-dir` → `$OPENCLAW_LOG_DIR` → `/tmp/openclaw/` → `~/Library/Logs/openclaw/` → `%TEMP%/openclaw/`
+## 前置条件
 
-**会话目录：** `--sessions-dir` → `$OPENCLAW_SESSIONS_DIR` → `~/.openclaw/agents/*/sessions/` → `$OPENCLAW_STATE_DIR/agents/*/sessions/`
+### 标准模式（默认）
+无需配置。读取 `~/.openclaw/agents/*/sessions/*.jsonl`。
 
-## API 参考
-
-### 标准模式端点
-
-| 端点 | 说明 |
-|------|------|
-| `GET /` | 面板页面 |
-| `GET /api/dashboard?date=` | **批量接口**：summary + model\_calls + restarts（高级模式额外含 events/runs/errors） |
-| `GET /api/dates` | 可用日志日期 |
-| `GET /api/summary?date=` | KPI 统计：模型调用、推理耗时、Token、缓存、工具、Thinking |
-| `GET /api/model_calls?date=&page=&per_page=` | 分页模型调用记录（来源 session 文件） |
-| `GET /api/tool_stats?date=` | 按工具分组的调用次数、耗时、成功率 |
-| `GET /api/restarts?date=` | Gateway 重启历史 |
-| `GET /api/system_info` | Python 版本、内存、配置路径、模型调用总数 |
-| `GET /api/mode` | 当前模式（standard/advanced）、数据源可用性 |
-| `GET /api/probes` | 可用探测项列表 |
-| `POST /api/probe/<name>` | 执行单项探测 |
-| `POST /api/probe/all` | 执行全部探测 |
-
-### 高级模式端点（额外）
-
-| 端点 | 说明 |
-|------|------|
-| `GET /api/events?date=` | 事件摘要 + 消息流水线统计 |
-| `GET /api/events/timeline?date=&page=&per_page=&category=` | 分页事件时间线（支持分类过滤） |
-| `GET /api/events/webhooks?date=` | Webhook 事件 |
-| `GET /api/events/messages?date=` | 消息队列事件 |
-| `GET /api/events/errors?date=&severity=&type=` | 错误列表（支持过滤） |
-| `GET /api/runs?date=&page=&per_page=` | 分页 Run 列表 |
-| `GET /api/run/<id>?date=` | Run 详情：model\_calls、甘特图、工具、推理分段 |
-
-所有端点支持 `date` 参数（默认使用最新可用日期）。响应格式：`Content-Type: application/json; charset=utf-8`，支持 gzip。
-
-## 架构
-
-### 数据源
-
-| 数据源 | 适用模式 | 提供数据 |
-|--------|---------|---------|
-| **Session 文件** `~/.openclaw/agents/*/sessions/*.jsonl` | 标准 + 高级 | 模型调用、Token、推理耗时、工具详情、Thinking、对话树 |
-| **日志文件** `/tmp/openclaw/openclaw-YYYY-MM-DD.log` | 仅高级 | Run 事件、消息流水线、事件时间线 |
-| **OpenClaw CLI** | 两种模式 | 实时探测（health、doctor、gateway status 等） |
-
-Session 文件扫描覆盖：`*.jsonl`、`*.jsonl.reset.*`、`*.jsonl.deleted.*`，跨所有 Agent 目录。
-
-### 推理耗时计算（Session 驱动）
-
-```
-user 消息 (时间戳 T1)
-    ↓
-assistant 响应 (时间戳 T2)
-    ↓
-inference_ms = T2 - T1
-tokens_per_sec = output_tokens / (inference_ms / 1000)
+### 高级模式（`--advanced`）
+需在 `~/.openclaw/openclaw.json` 中配置：
+```json
+{
+  "diagnostics": { "enabled": true },
+  "logging": { "level": "debug" }
+}
 ```
 
-- 从 session.jsonl 的连续消息对中提取时间戳
-- 标准模式即可使用 — 无需 debug 日志
-- 精确到单次 LLM 调用级别（非 Run 级别估算）
-
-### Gateway 重启检测
-
-从日志文件识别 4 种事件类型：
-- **SHUTDOWN** — 收到 SIGTERM 的优雅关闭
-- **TRIGGER** — 外部触发重启（如 `openclaw gateway restart`）
-- **STARTUP** — Gateway 启动事件
-- **CRASH** — 意外终止（无前置 SIGTERM）
-
-### 性能优化
-
-| 优化措施 | 效果 |
-|---------|------|
-| TTL 缓存（10s） | summary/runs/restarts/tool\_stats：3.5s → 30ms |
-| 批量接口 | 3 次 HTTP 请求 → 1 次 |
-| Gzip 压缩 | app.js 28KB→8KB，API 约 76% 压缩 |
-| ETag + 304 | 静态文件缓存验证 |
-| 关键 CSS 内联 | 加速首次渲染 |
-| Session 预加载 | 后台线程启动时加载 session 数据 |
-
-**基准测试（2 vCPU, 4GB RAM, 309 个 session, 963 次模型调用）：**
-
-| 指标 | 结果 |
-|------|------|
-| 15 个端点全部 < 500ms（缓存热） | ✅ |
-| `/api/dashboard`（缓存热） | ~30ms |
-| 10 次并发 dashboard | 平均 350ms |
-| 完整页面加载（并行） | ~1s |
-
-## 兼容性
-
-- **Python**: 3.6+
-- **操作系统**: Linux、macOS、Windows
-- **浏览器**: Chrome、Firefox、Safari、Edge
+---
 
 ## 文件结构
 
 ```
 openclaw-diag-dashbaard/
-├── openclaw-dashboard.py   # Web 面板 + CLI（3900+ 行）
-├── openclaw-collector.sh   # 远程采集脚本
-├── start-dashboard.sh      # 交互式启动脚本
-├── Dockerfile              # Docker 镜像定义
-├── docker-compose.yml      # Docker Compose 配置
+├── openclaw-dashboard.py      # Dashboard Server（4000+ 行）
+├── openclaw-collector.sh      # 远程 Collector 采集脚本
+├── openclaw-diag.sh           # 独立 Shell 诊断工具
+├── start-dashboard.sh         # 交互式启动辅助
+├── Dockerfile                 # Docker 镜像
+├── docker-compose.yml         # Docker Compose 配置
 ├── static/
-│   ├── index.html          # 面板布局
-│   ├── app.js              # 前端逻辑（1400+ 行）
-│   └── style.css           # 暗色主题样式
+│   ├── index.html             # 面板布局
+│   ├── app.js                 # 前端逻辑（1500+ 行）
+│   └── style.css              # 暗色主题样式
 ├── deploy/
-│   ├── install.sh          # 一键安装脚本
+│   ├── install.sh             # 一键 systemd 安装
 │   ├── openclaw-diag.service  # systemd 服务文件
-│   └── openclaw-diag.env   # 环境变量配置模板
+│   └── openclaw-diag.env      # 环境变量配置模板
 ├── docs/
-│   └── screenshots/        # 面板截图
-├── README.md               # English documentation
-└── README_zh.md            # 中文文档
+│   └── screenshots/           # 面板截图
+├── README.md
+└── README_zh.md
 ```
+
+## 兼容性
+
+- **Python**: 3.7+
+- **操作系统**: Linux、macOS、Windows
+- **浏览器**: Chrome、Firefox、Safari、Edge
 
 ## 更新日志
 
+### v4.2 (2026-04-01)
+- **多节点架构** — Collector/Server 分布式模型，HTTP 上报端点
+- **Collector** — 12 类数据源，gzip 压缩，HMAC-SHA256 节点认证，daemon/once/loop 模式
+- **Dashboard 登录** — 全站 API Key 认证，HMAC 签名 Session Cookie
+- **敏感数据** — 环境变量、OpenClaw 配置、命令历史、系统日志的采集与展示
+- **逐节点锁** — 线程安全的跨节点并发访问
+- **节点管理** — 自动注册、在线/离线状态、DELETE 清理
+- **Bearer 认证** — GET 端点支持 Bearer Token 和 Session Cookie 双认证
+- **部署方案** — systemd 服务、Docker、一键安装脚本
+
 ### v3.2 (2026-03-20)
+- **多 Agent 过滤**（`-a/--agent`）— 批量、摘要、实时跟踪模式的逐 Agent 诊断
+- **Agent 活动分布** — 逐 Agent 推理次数、延迟、吞吐量、会话数
+- **Bug 修复** — 日期过滤精度、Agent 范围统计、虚拟 Run 日期过滤
 
-**新功能**
-- **多 Agent 过滤**（`-a/--agent NAME`）— 按 Agent 名称过滤诊断数据（main、waicode、wairesearch、waiqa 等）
-  - 批量分析：通过 session_uuid→agent 映射过滤 runs、sessions、errors、messages
-  - 实时跟踪模式（`-f`）：按 Agent 过滤事件流
-  - 摘要模式（`-s`）：展示单个 Agent 的统计数据
-- **Agent 活动分布** — 摘要新增每个 Agent 的推理次数、平均延迟、Token 吞吐量、会话数
+### v3.0 (2026-03-19)
+- Session 优先架构 — 全部分析基于 `session.jsonl`
+- 工具执行统计（`toolResult.details`）
+- 思考深度分析
+- 标准模式无需 debug 配置
 
-**Bug 修复**
-- **[P1]** 修复日期过滤使用 ±1 天宽松匹配导致统计数据膨胀约 35% 的严重问题，改为严格 UTC 日期匹配
-- **[P2]** 修复 Agent 过滤未覆盖错误/消息统计的问题
-- **[P3]** 修复虚拟 Run 模式下全局统计未按日期过滤的问题
-
-### v3.0
-
-- Session 优先架构 — 所有分析数据由 `session.jsonl` 驱动
-- 从 `toolResult.details` 提取工具执行统计
-- Thinking 深度分析
-- 标准模式无需配置 debug 日志
-
-## License
+## 许可证
 
 [MIT](LICENSE) © 2026 wujiaming88
