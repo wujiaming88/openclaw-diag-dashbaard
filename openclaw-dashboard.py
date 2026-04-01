@@ -649,6 +649,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             self._send_json(payload.get("tool_stats", {}))
         elif endpoint == "sessions":
             self._send_json(payload.get("sessions", []))
+        elif endpoint == "conversation_tree":
+            # 返回指定 session 的消息列表
+            session_id = params.get("session_id", [""])[0]
+            all_msgs = payload.get("session_messages", {})
+            if session_id and session_id in all_msgs:
+                self._send_json(all_msgs[session_id])
+            else:
+                # 尝试前缀匹配（前端可能只传了短 ID）
+                for sid, msgs in all_msgs.items():
+                    if sid.startswith(session_id):
+                        self._send_json(msgs)
+                        return
+                self._send_json([])
         elif endpoint == "restarts":
             self._send_json(self._normalize_restarts(payload.get("restarts", [])))
         elif endpoint == "thinking_stats":
