@@ -1338,8 +1338,12 @@ run_foreground() {
 }
 
 show_node_info() {
+    local ip
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$ip" ] && ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null)
+    [ -z "$ip" ] && ip="unknown"
+    echo -e "${CYAN}本机 IP: ${BOLD}${ip}${NC}"
     echo -e "${CYAN}上报目标: ${DASHBOARD_URL}${NC}"
-    echo -e "${CYAN}节点 IP 将由服务端分配（首次上报后显示）${NC}"
 }
 
 show_node_id_from_response() {
