@@ -1,7 +1,9 @@
 #!/bin/bash
 # ============================================================
-# OpenClaw Diagnostics Collector v1.0
+# OpenClaw Diagnostics Collector v1.1
 # 采集本机 OpenClaw 诊断数据并上报到 Dashboard Server
+# 启动时自动启用高级采集模式（diagnostics.enabled + logging.level=debug）
+# 停止时自动还原配置并重启 Gateway
 #
 # 用法:
 #   bash openclaw-collector.sh           # 首次交互配置 + 前台运行
@@ -19,14 +21,213 @@ set -uo pipefail
 CONFIG_FILE="$HOME/.openclaw-collector.json"
 PID_FILE="$HOME/.openclaw-collector.pid"
 LOG_FILE="$HOME/.openclaw-collector.log"
+OPENCLAW_CONFIG_BACKUP=""  # openclaw.json 备份路径（还原用）
 
 # 颜色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+GRAY='\033[0;90m'
 BOLD='\033[1m'
 NC='\033[0m'
+
+# ============================================================
+# OpenClaw 配置管理（diagnostics + debug 日志）
+# ============================================================
+
+# 查找 openclaw.json
+find_openclaw_config() {
+    local paths=(
+        "$HOME/.openclaw/openclaw.json"
+        "/root/.openclaw/openclaw.json"
+        "/etc/openclaw/openclaw.json"
+    )
+    for p in "${paths[@]}"; do
+        if [ -f "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 读取 openclaw.json 中的某个字段值
+check_config_value() {
+    local file="$1" key="$2"
+    python3 -c "
+import json
+with open('$file') as f:
+    d = json.load(f)
+keys = '$key'.split('.')
+v = d
+for k in keys:
+    v = v.get(k, None) if isinstance(v, dict) else None
+    if v is None:
+        break
+print(v if v is not None else '')
+" 2>/dev/null
+}
+
+# 设置 openclaw.json 中的某个字段值
+set_config_value() {
+    local file="$1" key="$2" value="$3"
+    python3 -c "
+import json
+with open('$file') as f:
+    d = json.load(f)
+keys = '$key'.split('.')
+obj = d
+for k in keys[:-1]:
+    if k not in obj or not isinstance(obj[k], dict):
+        obj[k] = {}
+    obj = obj[k]
+# 类型转换
+val = '$value'
+if val == 'true':
+    val = True
+elif val == 'false':
+    val = False
+elif val.isdigit():
+    val = int(val)
+obj[keys[-1]] = val
+with open('$file', 'w') as f:
+    json.dump(d, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+" 2>/dev/null
+}
+
+# 启用高级采集模式（diagnostics.enabled + logging.level=debug）
+# 会备份 openclaw.json、修改配置并重启 Gateway
+enable_advanced_collection() {
+    local oc_config
+    oc_config=$(find_openclaw_config) || {
+        echo -e "${YELLOW}⚠️  找不到 openclaw.json，跳过高级模式配置${NC}"
+        echo -e "   日志采集将依赖已有的日志文件（如有）"
+        return 1
+    }
+
+    local diag_enabled log_level
+    diag_enabled=$(check_config_value "$oc_config" "diagnostics.enabled")
+    log_level=$(check_config_value "$oc_config" "logging.level")
+
+    local need_change=false
+    echo ""
+    echo -e "${BOLD}🔧 高级采集模式配置检查${NC}"
+    echo -e "   配置文件: ${GRAY}$oc_config${NC}"
+    echo ""
+
+    if [ "$diag_enabled" != "True" ]; then
+        echo -e "   diagnostics.enabled: ${RED}${diag_enabled:-未设置}${NC} → ${GREEN}true${NC}"
+        need_change=true
+    else
+        echo -e "   diagnostics.enabled: ${GREEN}true${NC} (已启用)"
+    fi
+
+    if [ "$log_level" != "debug" ]; then
+        echo -e "   logging.level:       ${RED}${log_level:-未设置}${NC} → ${GREEN}debug${NC}"
+        need_change=true
+    else
+        echo -e "   logging.level:       ${GREEN}debug${NC} (已启用)"
+    fi
+    echo ""
+
+    if [ "$need_change" = false ]; then
+        echo -e "   ${GREEN}✔ 高级采集已就绪，无需修改配置${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}📋 高级采集模式说明${NC}"
+    echo ""
+    echo "  Collector 需要启用以下两项 OpenClaw 配置才能获取完整诊断数据："
+    echo ""
+    echo "  ${BOLD}1. diagnostics.enabled = true${NC}"
+    echo "     启用诊断数据输出，包括详细的 Run 事件、工具执行计时等"
+    echo ""
+    echo "  ${BOLD}2. logging.level = debug${NC}"
+    echo "     启用 debug 级别日志，记录 Gateway 内部事件流"
+    echo "     日志文件: /tmp/openclaw/openclaw-YYYY-MM-DD.log"
+    echo ""
+    echo "  修改后需要重启 OpenClaw Gateway 使配置生效。"
+    echo "  ${GREEN}Collector 停止时会自动还原原始配置并重启 Gateway。${NC}"
+    echo ""
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    read -rp "是否允许修改配置并重启 Gateway？(y/N): " consent
+    if [[ ! "$consent" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}已跳过。Collector 仍会运行，但日志数据可能不完整。${NC}"
+        return 1
+    fi
+
+    # 备份
+    local backup="${oc_config}.collector-backup.$(date +%s)"
+    cp "$oc_config" "$backup"
+    OPENCLAW_CONFIG_BACKUP="$backup"
+    echo -e "   ${GREEN}✔ 配置已备份: ${GRAY}$backup${NC}"
+
+    # 修改配置
+    if [ "$diag_enabled" != "True" ]; then
+        set_config_value "$oc_config" "diagnostics.enabled" "true"
+        echo -e "   ${GREEN}✔ diagnostics.enabled → true${NC}"
+    fi
+    if [ "$log_level" != "debug" ]; then
+        set_config_value "$oc_config" "logging.level" "debug"
+        echo -e "   ${GREEN}✔ logging.level → debug${NC}"
+    fi
+
+    # 重启 Gateway
+    echo ""
+    echo -e "   重启 OpenClaw Gateway..."
+    if openclaw gateway restart 2>&1 | tail -3; then
+        echo -e "   ${GREEN}✔ Gateway 已重启${NC}"
+    else
+        echo -e "   ${RED}✘ Gateway 重启失败，还原配置...${NC}"
+        cp "$backup" "$oc_config"
+        OPENCLAW_CONFIG_BACKUP=""
+        openclaw gateway restart 2>&1 | tail -3 || true
+        echo -e "   ${GREEN}✔ 配置已还原${NC}"
+        return 1
+    fi
+    echo ""
+    return 0
+}
+
+# 还原 openclaw.json 配置
+restore_openclaw_config() {
+    if [ -z "$OPENCLAW_CONFIG_BACKUP" ] || [ ! -f "$OPENCLAW_CONFIG_BACKUP" ]; then
+        return 0
+    fi
+
+    local oc_config
+    oc_config=$(find_openclaw_config) || return 0
+
+    echo ""
+    echo -e "${CYAN}🔄 还原 OpenClaw 配置...${NC}"
+    cp "$OPENCLAW_CONFIG_BACKUP" "$oc_config"
+    echo -e "   ${GREEN}✔ 配置已还原: ${GRAY}$OPENCLAW_CONFIG_BACKUP${NC}"
+
+    echo -e "   重启 OpenClaw Gateway..."
+    if openclaw gateway restart 2>&1 | tail -3; then
+        echo -e "   ${GREEN}✔ Gateway 已重启${NC}"
+    else
+        echo -e "   ${YELLOW}⚠️  Gateway 重启失败，请手动检查${NC}"
+    fi
+
+    # 清理备份文件
+    rm -f "$OPENCLAW_CONFIG_BACKUP"
+    OPENCLAW_CONFIG_BACKUP=""
+    echo -e "   ${GREEN}✔ 备份文件已清理${NC}"
+}
+
+# 设置退出钩子（确保 Ctrl+C / kill 时还原配置）
+setup_exit_trap() {
+    trap '_collector_exit' EXIT
+}
+
+_collector_exit() {
+    restore_openclaw_config
+}
 
 # ============================================================
 # 配置管理
@@ -753,6 +954,8 @@ COLLECT_EOF
 # ============================================================
 
 run_foreground() {
+    setup_exit_trap
+    enable_advanced_collection || true
     echo -e "${CYAN}开始采集上报...${NC}"
     while true; do
         collect_and_report || true
@@ -762,7 +965,21 @@ run_foreground() {
 }
 
 run_daemon() {
+    # 在 daemon 启动前先启用高级采集（交互式确认）
+    enable_advanced_collection || true
     echo -e "${CYAN}启动后台采集...${NC}"
+    # 将备份路径写入配置，供 --stop 还原
+    if [ -n "$OPENCLAW_CONFIG_BACKUP" ]; then
+        python3 -c "
+import json
+with open('$CONFIG_FILE') as f:
+    d = json.load(f)
+d['_openclaw_config_backup'] = '$OPENCLAW_CONFIG_BACKUP'
+with open('$CONFIG_FILE', 'w') as f:
+    json.dump(d, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+" 2>/dev/null
+    fi
     nohup bash "$0" --_loop >> "$LOG_FILE" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"
@@ -770,9 +987,13 @@ run_daemon() {
     echo -e "${GREEN}后台运行中 (PID: $pid)${NC}"
     echo -e "日志: $LOG_FILE"
     echo -e "PID 文件: $PID_FILE"
+    # daemon 模式下父进程不持有 trap，清空避免误还原
+    OPENCLAW_CONFIG_BACKUP=""
 }
 
 run_once() {
+    setup_exit_trap
+    enable_advanced_collection || true
     echo -e "${CYAN}执行单次采集上报...${NC}"
     collect_and_report
 }
@@ -812,6 +1033,31 @@ stop_daemon() {
         echo -e "${YELLOW}进程已停止${NC}"
     fi
     rm -f "$PID_FILE"
+
+    # 还原 openclaw.json 配置
+    local saved_backup
+    saved_backup=$(python3 -c "
+import json, os
+cfg = '$CONFIG_FILE'
+if os.path.isfile(cfg):
+    d = json.load(open(cfg))
+    print(d.get('_openclaw_config_backup', ''))
+" 2>/dev/null)
+
+    if [ -n "$saved_backup" ] && [ -f "$saved_backup" ]; then
+        OPENCLAW_CONFIG_BACKUP="$saved_backup"
+        restore_openclaw_config
+        # 清理配置中的备份路径
+        python3 -c "
+import json
+with open('$CONFIG_FILE') as f:
+    d = json.load(f)
+d.pop('_openclaw_config_backup', None)
+with open('$CONFIG_FILE', 'w') as f:
+    json.dump(d, f, indent=2, ensure_ascii=False)
+    f.write('\n')
+" 2>/dev/null
+    fi
 }
 
 # ============================================================
@@ -845,6 +1091,15 @@ case "${1:-}" in
     --_loop)
         # 内部循环模式 (daemon 使用)
         load_config
+        # 从配置中恢复备份路径，用于 kill 时还原
+        OPENCLAW_CONFIG_BACKUP=$(python3 -c "
+import json, os
+cfg = '$CONFIG_FILE'
+if os.path.isfile(cfg):
+    d = json.load(open(cfg))
+    print(d.get('_openclaw_config_backup', ''))
+" 2>/dev/null)
+        setup_exit_trap
         while true; do
             collect_and_report || true
             sleep "$INTERVAL"
@@ -859,8 +1114,14 @@ case "${1:-}" in
         echo "  --once      采集一次上报后退出"
         echo "  --config    重新配置"
         echo "  --status    查看后台进程状态"
-        echo "  --stop      停止后台进程"
+        echo "  --stop      停止后台进程（自动还原 OpenClaw 配置）"
         echo "  --help      显示此帮助"
+        echo ""
+        echo "高级采集模式:"
+        echo "  首次启动时会检查 OpenClaw 配置，自动启用："
+        echo "    • diagnostics.enabled = true  (诊断数据输出)"
+        echo "    • logging.level = debug       (详细日志记录)"
+        echo "  修改前会备份配置文件，停止时自动还原并重启 Gateway。"
         ;;
     *)
         # 默认：首次运行交互配置，然后前台
@@ -868,11 +1129,13 @@ case "${1:-}" in
             interactive_config
             load_config
         fi
+        setup_exit_trap
+        enable_advanced_collection || true
         echo ""
         echo -e "${CYAN}开始首次采集上报...${NC}"
         collect_and_report
         echo ""
-        echo -e "前台运行中，按 Ctrl+C 退出。"
+        echo -e "前台运行中，按 Ctrl+C 退出（自动还原配置）。"
         echo -e "使用 ${BOLD}--daemon${NC} 参数可后台运行。"
         echo ""
         run_foreground
