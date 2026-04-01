@@ -516,8 +516,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         """将 Collector 上报的 kpi 字段映射为前端 renderSummary 期望的字段名"""
         mc = payload.get("model_calls", [])
         raw_ts = payload.get("tool_stats", [])
-        # Collector 发送的 tool_stats 可能是嵌套对象 {"by_tool": [...], "total_calls": N}
-        # 或直接是数组 [{name, count, ...}]
         if isinstance(raw_ts, dict):
             ts = raw_ts.get("by_tool", [])
         elif isinstance(raw_ts, list):
@@ -525,6 +523,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         else:
             ts = []
         restarts = payload.get("restarts", [])
+        runs = payload.get("runs", [])
+        errors = payload.get("errors", [])
         # 计算工具汇总
         total_tool_calls = sum(t.get("count", 0) for t in ts) if ts else raw.get("total_tool_calls", 0)
         total_tool_ms = sum(t.get("total_ms", 0) for t in ts)
@@ -541,10 +541,25 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         thinking_calls = [m for m in mc if m.get("thinking_chars", 0) > 0]
         thinking_total_chars = sum(m.get("thinking_chars", 0) for m in mc)
         thinking_calls_count = len(thinking_calls) or thinking_stats.get("total_thinking", 0)
-        # 计算 thinking 占输出 token 比例 (chars ≈ tokens * 4)
         total_output_tokens = sum(m.get("output_tokens", 0) for m in mc) or raw.get("total_output_tokens", 0)
         thinking_avg_ratio = (thinking_total_chars / (thinking_total_chars + total_output_tokens * 4)) if (thinking_total_chars + total_output_tokens * 4) > 0 else 0
+        # Run 统计（高级模式卡片）
+        total_runs = len(runs)
+        run_durations = [r.get("duration_ms", 0) for r in runs if r.get("duration_ms", 0) > 0]
+        avg_duration_ms = round(sum(run_durations) / len(run_durations)) if run_durations else 0
+        total_run_infer = sum(r.get("infer_ms", 0) for r in runs)
+        total_run_dur = sum(r.get("duration_ms", 0) for r in runs)
+        infer_ratio = round(total_run_infer / total_run_dur * 100, 1) if total_run_dur > 0 else round(total_infer_ms / max(total_infer_ms + total_tool_ms, 1) * 100, 1)
+        run_tps = [r.get("token_output", 0) / (r.get("infer_ms", 0) / 1000) for r in runs if r.get("infer_ms", 0) > 0 and r.get("token_output", 0) > 0]
+        avg_tok_per_s = round(sum(run_tps) / len(run_tps), 1) if run_tps else round(avg_tps, 1)
+        run_errors = sum(r.get("error_count", 0) for r in runs) + len(errors)
         return {
+            # 高级模式 — 第一行 Run 统计
+            "total_runs": total_runs,
+            "avg_duration_ms": avg_duration_ms,
+            "infer_ratio": infer_ratio,
+            "avg_tok_per_s": avg_tok_per_s,
+            "error_count": run_errors,
             # 前端 renderSummary 使用的字段 — 第一行
             "session_model_call_count": raw.get("total_model_calls", len(mc)),
             "session_avg_inference_ms": round(avg_infer_ms, 1),
