@@ -420,7 +420,7 @@ function renderSummary(s) {
   html2 += '<div class="card"><div class="label">缓存写入' + tipIcon('tokenCacheWrite') + '</div><div class="value">' + fmtTok(s.total_cache_write || 0) + '</div></div>';
   var hitCls = (s.cache_hit_ratio || 0) > 80 ? '' : ' warn';
   html2 += '<div class="card' + hitCls + '"><div class="label">缓存命中率' + tipIcon('cacheHit') + '</div><div class="value">' + (s.cache_hit_ratio || 0) + '%</div></div>';
-  html2 += '<div class="card"><div class="label">总费用' + tipIcon('totalCost') + '</div><div class="value">' + fmtCost(s.total_model_cost || 0) + '</div></div>';
+  // 总费用卡片已移除
   $('#summaryCards2').innerHTML = html2;
 
   // 第四行：工具统计 + Thinking 统计
