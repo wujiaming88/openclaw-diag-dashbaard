@@ -244,12 +244,7 @@ function renderNodeSelector() {
   sel.value = currentNode;
 }
 
-function fetchSystemInfo() {
-  var path = currentNode ? nodeApiPath('/api/system_info') : '/api/system_info';
-  api(path, function (info) {
-    // (system info bar removed)
-  });
-}
+// (fetchSystemInfo removed)
 
 function fetchDates() {
   var path = currentNode ? nodeApiPath('/api/dates') : '/api/dates';
@@ -1523,7 +1518,6 @@ $('#nodeSelect').addEventListener('change', function () {
   conversationLoaded = false;
   // Reload everything for new node
   fetchMode(function () {
-    fetchSystemInfo();
     fetchDates();
   });
 });
@@ -1535,7 +1529,6 @@ $('#autoRefreshSelect').addEventListener('change', function () {
 // Initial load: fetch nodes first, then mode/dates
 fetchNodes(function () {
   fetchMode(function () {
-    fetchSystemInfo();
     fetchDates();
     initAutoRefresh(autoInterval);
   });

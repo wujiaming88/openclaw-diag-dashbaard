@@ -1831,121 +1831,6 @@ def compute_infer_segments_from_session(run, model_calls):
 
 # ============================================================
 # 系统信息
-# ============================================================
-
-def get_system_info(data_store, config_path, config_data):
-    """收集系统信息"""
-    info = {}
-
-    # OpenClaw version
-    oc_version = ""
-    try:
-        result = subprocess.run(
-            ["openclaw", "--version"],
-            capture_output=True, text=True, timeout=5,
-            stderr=subprocess.DEVNULL
-        )
-        if result.returncode == 0:
-            oc_version = result.stdout.strip()
-    except Exception:
-        pass
-    if not oc_version:
-        # try package.json
-        for pj_path in [
-            "/usr/lib/node_modules/openclaw/package.json",
-            os.path.expanduser("~/.npm-global/lib/node_modules/openclaw/package.json"),
-        ]:
-            if os.path.isfile(pj_path):
-                try:
-                    with open(pj_path, "r") as f:
-                        pj = json.load(f)
-                    oc_version = pj.get("version", "")
-                    break
-                except Exception:
-                    pass
-    info["openclaw_version"] = oc_version
-    info["openclaw_config_path"] = config_path or ""
-
-    # Config info
-    diag_enabled = False
-    log_level = "info"
-    default_model = ""
-    agents_list = []
-    channels_list = []
-    if config_data and isinstance(config_data, dict):
-        diag = config_data.get("diagnostics", {})
-        if isinstance(diag, dict):
-            diag_enabled = diag.get("enabled", False)
-        logging_cfg = config_data.get("logging", {})
-        if isinstance(logging_cfg, dict):
-            log_level = logging_cfg.get("level", "info")
-        default_model = config_data.get("defaultModel", "")
-        agents_cfg = config_data.get("agents", {})
-        if isinstance(agents_cfg, dict):
-            al = agents_cfg.get("list", [])
-            if isinstance(al, list):
-                for a in al:
-                    if isinstance(a, dict):
-                        agents_list.append(a.get("id", a.get("name", "")))
-                    elif isinstance(a, str):
-                        agents_list.append(a)
-        channels_cfg = config_data.get("channels", {})
-        if isinstance(channels_cfg, dict):
-            for key in channels_cfg:
-                channels_list.append(key)
-        elif isinstance(channels_cfg, list):
-            channels_list = channels_cfg
-
-    info["diagnostics_enabled"] = diag_enabled
-    info["logging_level"] = log_level
-    info["default_model"] = default_model
-    info["agents"] = agents_list
-    info["channels"] = channels_list
-
-    # System info
-    info["python_version"] = platform.python_version()
-    info["platform"] = platform.platform()
-    info["hostname"] = socket.gethostname()
-    info["cpu_count"] = os.cpu_count() or 0
-
-    # Memory
-    mem_total = 0
-    mem_used = 0
-    try:
-        with open("/proc/meminfo", "r") as f:
-            meminfo = f.read()
-        m_total = re.search(r"MemTotal:\s+(\d+)\s+kB", meminfo)
-        m_avail = re.search(r"MemAvailable:\s+(\d+)\s+kB", meminfo)
-        if m_total:
-            mem_total = int(m_total.group(1)) // 1024
-        if m_total and m_avail:
-            mem_used = mem_total - int(m_avail.group(1)) // 1024
-    except Exception:
-        pass
-    info["memory_total_mb"] = mem_total
-    info["memory_used_mb"] = mem_used
-
-    # Log/session stats
-    info["log_dir"] = data_store.log_dir
-    log_files = glob.glob(os.path.join(data_store.log_dir, "openclaw-*.log"))
-    info["log_file_count"] = len(log_files)
-
-    sessions_dir_count = len(data_store.sessions_dirs)
-    session_file_count = 0
-    for d in data_store.sessions_dirs:
-        for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
-            session_file_count += len(glob.glob(os.path.join(d, _ep)))
-    info["sessions_dir_count"] = sessions_dir_count
-    info["session_file_count"] = session_file_count
-
-    # 模型调用总数 (不触发懒加载，避免阻塞首次请求)
-    model_calls = data_store._model_calls if data_store._tool_data_loaded else None
-    info["model_calls_total"] = len(model_calls) if model_calls else -1
-
-    return info
-
-
-# ============================================================
 # 构建 API 数据
 # ============================================================
 
@@ -3708,9 +3593,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             summary = payload.get("summary", {})
             date_val = summary.get("date", "")
             self._send_json([date_val] if date_val else [])
-        elif endpoint == "system_info":
-            # 远程节点没有系统信息
-            self._send_json({"hostname": node_id, "note": "Remote node — system info not available"})
         elif endpoint == "mode":
             self._send_json({"mode": "standard", "debug_log_available": False, "session_files_available": True})
         else:
@@ -3776,9 +3658,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             self._send_json(self.data_store.get_restarts(date))
         elif endpoint == "dates":
             self._send_json(self.data_store.get_dates())
-        elif endpoint == "system_info":
-            info = get_system_info(self.data_store, self.config_path, self.config_data)
-            self._send_json(info)
         elif endpoint == "mode":
             log_dir = self.data_store.log_dir
             debug_log_available = os.path.isdir(log_dir) and len(glob.glob(os.path.join(log_dir, "openclaw-*.log"))) > 0
@@ -4076,9 +3955,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                     "debug_log_available": self.data_store.has_debug_logs(date or None),
                     "session_files_available": session_files_available,
                 })
-            elif path == "/api/system_info":
-                info = get_system_info(self.data_store, self.config_path, self.config_data)
-                self._send_json(info)
             elif path == "/api/dashboard":
                 # 批量接口: 一次返回 summary + events + runs，减少前端请求数
                 date = params.get("date", [""])[0]
