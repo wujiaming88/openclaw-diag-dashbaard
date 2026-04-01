@@ -362,3 +362,34 @@ tr.clickable:hover td{background:var(--hover)}
 .node-selector-wrap{display:inline-flex;align-items:center}
 .node-selector-wrap select{padding:6px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--bg2);color:var(--text);font-size:14px;cursor:pointer;font-weight:500;min-width:120px}
 .node-selector-wrap select:hover{border-color:var(--blue)}
+
+/* === v4.2: 节点诊断数据子区块 === */
+.subsection{margin:8px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.subsection-header{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;cursor:pointer;background:var(--bg2);font-size:14px;user-select:none}
+.subsection-header:hover{background:var(--hover)}
+.subsection-header h3{font-size:14px;font-weight:500;display:flex;align-items:center;gap:6px}
+.subsection-body{display:none;padding:10px 14px;max-height:500px;overflow-y:auto;font-size:13px}
+.subsection-body.open{display:block}
+/* 环境变量表格 */
+.env-table{width:100%;border-collapse:collapse;font-size:12px;font-family:'SF Mono','Fira Code',monospace}
+.env-table th{text-align:left;padding:4px 10px;background:var(--bg);color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1}
+.env-table td{padding:4px 10px;border-bottom:1px solid var(--border);word-break:break-all;max-width:600px}
+.env-table tr:hover{background:var(--hover)}
+.env-key{color:var(--green);font-weight:500}
+.env-val{color:var(--text)}
+.env-masked{color:var(--yellow);font-style:italic}
+.env-filter{width:100%;padding:6px 10px;margin-bottom:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px}
+/* JSON 配置 */
+.json-tree{font-family:'SF Mono','Fira Code',monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:var(--text)}
+.json-key{color:var(--accent)}
+.json-str{color:var(--green)}
+.json-num{color:var(--yellow)}
+.json-bool{color:var(--purple)}
+.json-null{color:var(--text2)}
+.json-masked{color:var(--yellow);font-style:italic}
+/* 命令历史 & 日志 */
+.log-lines{font-family:'SF Mono','Fira Code',monospace;font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-all;color:var(--text2)}
+.log-lines .log-line{padding:1px 0;border-bottom:1px solid rgba(42,42,74,0.3)}
+.log-lines .log-line:hover{background:var(--hover);color:var(--text)}
+.log-lines .log-masked{color:var(--yellow)}
+.log-filter{width:100%;padding:6px 10px;margin-bottom:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px}

@@ -3807,6 +3807,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             self._send_json(payload.get("system_events", []))
         elif endpoint == "model_switches":
             self._send_json(payload.get("model_switches", []))
+        elif endpoint == "env_vars":
+            self._send_json(payload.get("env_vars", {}))
+        elif endpoint == "openclaw_config":
+            self._send_json(payload.get("openclaw_config", {}))
+        elif endpoint == "bash_history":
+            self._send_json(payload.get("bash_history", []))
+        elif endpoint == "journalctl":
+            self._send_json(payload.get("journalctl", []))
         elif endpoint == "dates":
             # 远程节点返回 payload 中已有数据的日期
             summary = payload.get("summary", {})

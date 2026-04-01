@@ -1312,6 +1312,7 @@ function loadData() {
     renderSummary(data.summary);
     renderRestarts(data.restarts);
     renderModelCallsList(data.model_calls);
+    loadNodeDiagData();
 
     if (isAdvanced()) {
       if (data.events) {
@@ -1564,6 +1565,131 @@ window.toggleProbeResult = function (id) {
   var el = document.getElementById(id);
   if (el) el.classList.toggle('open');
 };
+
+window.toggleSubsection = function (el) {
+  el.classList.toggle('open');
+  var body = el.nextElementSibling;
+  if (body) body.classList.toggle('open');
+  var icon = el.querySelector('.toggle-icon');
+  if (icon) icon.textContent = body && body.classList.contains('open') ? '▼' : '▶';
+};
+
+// ============================================================
+// 节点诊断数据渲染
+// ============================================================
+
+function highlightMasked(text) {
+  // 高亮脱敏值 (含 ***)
+  if (typeof text !== 'string') return escHtml(String(text));
+  if (text.indexOf('***') >= 0) return '<span class="env-masked">' + escHtml(text) + '</span>';
+  return escHtml(text);
+}
+
+function renderEnvVars(data) {
+  var body = $('#envVarsBody');
+  var badge = $('#envVarsCount');
+  if (!body) return;
+  var keys = Object.keys(data || {});
+  if (badge) badge.textContent = keys.length;
+  if (!keys.length) { body.innerHTML = '<div style="color:var(--text2);padding:8px">无环境变量数据</div>'; return; }
+  var html = '<input class="env-filter" placeholder="🔍 筛选变量名或值..." oninput="filterEnvVars(this.value)">';
+  html += '<table class="env-table" id="envTable"><thead><tr><th style="width:30%">变量名</th><th>值</th></tr></thead><tbody>';
+  keys.sort();
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i], v = data[k];
+    html += '<tr class="env-row" data-search="' + escHtml((k + ' ' + v).toLowerCase()) + '">';
+    html += '<td class="env-key">' + escHtml(k) + '</td>';
+    html += '<td class="env-val">' + highlightMasked(v) + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  body.innerHTML = html;
+}
+
+window.filterEnvVars = function (q) {
+  q = q.toLowerCase();
+  var rows = document.querySelectorAll('.env-row');
+  for (var i = 0; i < rows.length; i++) {
+    rows[i].style.display = (!q || rows[i].getAttribute('data-search').indexOf(q) >= 0) ? '' : 'none';
+  }
+};
+
+function renderJsonTree(obj, indent) {
+  indent = indent || 0;
+  if (obj === null) return '<span class="json-null">null</span>';
+  if (typeof obj === 'boolean') return '<span class="json-bool">' + obj + '</span>';
+  if (typeof obj === 'number') return '<span class="json-num">' + obj + '</span>';
+  if (typeof obj === 'string') {
+    var cls = obj.indexOf('***') >= 0 ? 'json-masked' : 'json-str';
+    return '<span class="' + cls + '">"' + escHtml(obj) + '"</span>';
+  }
+  var pad = '  '.repeat(indent);
+  var pad1 = '  '.repeat(indent + 1);
+  if (Array.isArray(obj)) {
+    if (!obj.length) return '[]';
+    var items = obj.map(function (v) { return pad1 + renderJsonTree(v, indent + 1); });
+    return '[\n' + items.join(',\n') + '\n' + pad + ']';
+  }
+  var keys = Object.keys(obj);
+  if (!keys.length) return '{}';
+  var items = keys.map(function (k) {
+    return pad1 + '<span class="json-key">"' + escHtml(k) + '"</span>: ' + renderJsonTree(obj[k], indent + 1);
+  });
+  return '{\n' + items.join(',\n') + '\n' + pad + '}';
+}
+
+function renderOpenclawConfig(data) {
+  var body = $('#openclawConfigBody');
+  if (!body) return;
+  if (!data || (typeof data === 'object' && !Object.keys(data).length)) {
+    body.innerHTML = '<div style="color:var(--text2);padding:8px">无配置数据</div>';
+    return;
+  }
+  body.innerHTML = '<div class="json-tree">' + renderJsonTree(data) + '</div>';
+}
+
+function renderLogLines(containerId, badgeId, lines, placeholder) {
+  var body = $('#' + containerId);
+  var badge = $('#' + badgeId);
+  if (!body) return;
+  lines = lines || [];
+  if (badge) badge.textContent = lines.length;
+  if (!lines.length) { body.innerHTML = '<div style="color:var(--text2);padding:8px">' + (placeholder || '无数据') + '</div>'; return; }
+  var filterId = containerId + 'Filter';
+  var html = '<input class="log-filter" id="' + filterId + '" placeholder="🔍 筛选..." oninput="filterLogLines(\'' + containerId + '\', this.value)">';
+  html += '<div class="log-lines" id="' + containerId + 'Lines">';
+  // 倒序显示 (最新在前)
+  for (var i = lines.length - 1; i >= 0; i--) {
+    var line = lines[i];
+    var highlighted = highlightMasked(line);
+    html += '<div class="log-line" data-search="' + escHtml(line.toLowerCase()) + '">' + highlighted + '</div>';
+  }
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+window.filterLogLines = function (containerId, q) {
+  q = q.toLowerCase();
+  var rows = document.querySelectorAll('#' + containerId + 'Lines .log-line');
+  for (var i = 0; i < rows.length; i++) {
+    rows[i].style.display = (!q || rows[i].getAttribute('data-search').indexOf(q) >= 0) ? '' : 'none';
+  }
+};
+
+function loadNodeDiagData() {
+  // 仅远程节点有此数据
+  var section = $('#nodeDataSection');
+  if (!section) return;
+  if (!currentNode || currentNode === 'local') {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+  var base = nodeApiPath('');
+  api(base + '/env_vars', function (data) { renderEnvVars(data); });
+  api(base + '/openclaw_config', function (data) { renderOpenclawConfig(data); });
+  api(base + '/bash_history', function (data) { renderLogLines('bashHistoryBody', 'bashHistoryCount', data, '无命令历史'); });
+  api(base + '/journalctl', function (data) { renderLogLines('journalBody', 'journalCount', data, '无系统日志'); });
+}
 
 // ============================================================
 // 初始化
