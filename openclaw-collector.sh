@@ -908,67 +908,78 @@ runs_list = []
 events_timeline = []
 errors_list = []
 
-# --- Build runs from model_calls grouped by session_id ---
+# --- Build runs from model_calls: split by session_id + time gap (>90s = new run) ---
 from collections import defaultdict, Counter
+RUN_GAP_SEC = 90  # 两次 model_call 间隔超过 90 秒视为新 Run
+
 calls_by_session = defaultdict(list)
 for mc in model_calls:
     sid = mc.get("session_id", "")
     if sid:
         calls_by_session[sid].append(mc)
 
+run_seq = 0
 for sid, calls in calls_by_session.items():
     calls_sorted = sorted(calls, key=lambda c: c.get("timestamp", ""))
     if not calls_sorted:
         continue
-    start_ts = calls_sorted[0].get("timestamp", "")
-    end_ts = calls_sorted[-1].get("timestamp", "")
-    # Calculate duration
-    dur_ms = 0
-    st = parse_time(start_ts)
-    et = parse_time(end_ts)
-    if st and et:
-        dur_ms = round((et - st).total_seconds() * 1000)
-    # Most common model
-    model_counts = Counter(c.get("model", "") for c in calls_sorted)
-    top_model = model_counts.most_common(1)[0][0] if model_counts else ""
-    # Agent from first call
-    agent = calls_sorted[0].get("agent", "")
-    # Aggregate stats
-    tc = sum(len(c.get("tool_calls", [])) for c in calls_sorted)
-    tok_out = sum(c.get("output_tokens", 0) or 0 for c in calls_sorted)
-    infer = sum(c.get("inference_ms", 0) or 0 for c in calls_sorted)
-    # Error count: stopReason with "error" or tool exitCode != 0
-    err_cnt = 0
-    for c in calls_sorted:
-        sr = str(c.get("stopReason", "")).lower()
-        if "error" in sr:
-            err_cnt += 1
-        for t in c.get("tool_calls", []):
-            ec = t.get("exitCode")
-            if ec is not None and ec != 0:
+    # Split into runs by time gap
+    run_groups = []
+    current_group = [calls_sorted[0]]
+    for i in range(1, len(calls_sorted)):
+        prev_t = parse_time(calls_sorted[i-1].get("timestamp", ""))
+        curr_t = parse_time(calls_sorted[i].get("timestamp", ""))
+        if prev_t and curr_t and (curr_t - prev_t).total_seconds() > RUN_GAP_SEC:
+            run_groups.append(current_group)
+            current_group = []
+        current_group.append(calls_sorted[i])
+    if current_group:
+        run_groups.append(current_group)
+
+    for grp in run_groups:
+        run_seq += 1
+        start_ts = grp[0].get("timestamp", "")
+        end_ts = grp[-1].get("timestamp", "")
+        dur_ms = 0
+        st = parse_time(start_ts)
+        et = parse_time(end_ts)
+        if st and et:
+            dur_ms = round((et - st).total_seconds() * 1000)
+        model_counts = Counter(c.get("model", "") for c in grp)
+        top_model = model_counts.most_common(1)[0][0] if model_counts else ""
+        agent = grp[0].get("agent", "")
+        tc = sum(len(c.get("tool_calls", [])) for c in grp)
+        tok_out = sum(c.get("output_tokens", 0) or 0 for c in grp)
+        infer = sum(c.get("inference_ms", 0) or 0 for c in grp)
+        err_cnt = 0
+        for c in grp:
+            sr = str(c.get("stopReason", "")).lower()
+            if "error" in sr:
                 err_cnt += 1
-    status = "completed"
-    if err_cnt > 0:
-        status = "error"
-    runs_list.append({
-        "run_id": sid,
-        "agent": agent,
-        "session_key": sid,
-        "start": start_ts,
-        "end": end_ts,
-        "model": top_model,
-        "channel": "",
-        "tool_count": tc,
-        "model_count": len(calls_sorted),
-        "error_count": err_cnt,
-        "duration_ms": dur_ms,
-        "infer_ms": infer,
-        "tool_ms": 0,
-        "token_output": tok_out,
-        "status": status,
-        "virtual": True,
-        "model_calls": calls_sorted[:50],
-    })
+            for t in c.get("tool_calls", []):
+                ec = t.get("exitCode")
+                if ec is not None and ec != 0:
+                    err_cnt += 1
+        status = "completed" if err_cnt == 0 else "error"
+        runs_list.append({
+            "run_id": "%s#%d" % (sid[:12], run_seq),
+            "agent": agent,
+            "session_key": sid,
+            "start": start_ts,
+            "end": end_ts,
+            "model": top_model,
+            "channel": "",
+            "tool_count": tc,
+            "model_count": len(grp),
+            "error_count": err_cnt,
+            "duration_ms": dur_ms,
+            "infer_ms": infer,
+            "tool_ms": 0,
+            "token_output": tok_out,
+            "status": status,
+            "virtual": False,
+            "model_calls": grp[:50],
+        })
 
 runs_list = sorted(runs_list, key=lambda x: x.get("start") or "", reverse=True)[:200]
 
