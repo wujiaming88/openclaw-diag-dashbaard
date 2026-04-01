@@ -29,11 +29,13 @@ import argparse
 import glob
 import gzip
 import hashlib
+import hmac
 import json
 import math
 import os
 import platform
 import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -43,13 +45,14 @@ import traceback
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.cookies import SimpleCookie
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "4.0.0"
+VERSION = "4.1.0"
 ADVANCED_MODE = False  # 全局模式标志，由 main() 设置
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 
@@ -3498,12 +3501,122 @@ class DashboardHandler(BaseHTTPRequestHandler):
     data_store = None
     node_store = None
     access_token = None
-    api_key = None  # 上报认证密钥
+    api_key = None  # 上报认证密钥（同时用于 Dashboard 登录）
     config_path = None
     config_data = None
     static_dir = None  # 静态文件目录
     advanced_mode = False  # 运行模式
     no_local = False  # 纯远程模式
+    _session_secret = None  # HMAC 签名密钥（启动时随机生成）
+
+    # 不需要登录的路径白名单
+    _PUBLIC_PATHS = frozenset(["/login", "/api/report"])
+
+    def log_message(self, format, *args):
+        pass
+
+    @classmethod
+    def _init_session_secret(cls):
+        """启动时生成随机 session 签名密钥"""
+        if cls._session_secret is None:
+            cls._session_secret = secrets.token_hex(32)
+
+    def _make_session_cookie(self):
+        """生成 HMAC 签名的 session cookie"""
+        ts = str(int(time.time()))
+        msg = "openclaw-dash:" + ts
+        sig = hmac.new(self._session_secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+        return "%s.%s" % (ts, sig)
+
+    def _verify_session_cookie(self, cookie_val):
+        """验证 session cookie 签名，有效期 24h"""
+        if not cookie_val or "." not in cookie_val:
+            return False
+        try:
+            ts_str, sig = cookie_val.split(".", 1)
+            ts = int(ts_str)
+        except (ValueError, TypeError):
+            return False
+        # 过期检查 (24h)
+        if abs(time.time() - ts) > 86400:
+            return False
+        expected = hmac.new(self._session_secret.encode(), ("openclaw-dash:" + ts_str).encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, expected)
+
+    def _check_dashboard_auth(self):
+        """检查 Dashboard 访问认证，返回 True 表示已认证"""
+        # 未配置 api_key 则不需要登录
+        if not self.api_key:
+            return True
+        # 检查 session cookie
+        cookie_header = self.headers.get("Cookie", "")
+        cookies = SimpleCookie()
+        try:
+            cookies.load(cookie_header)
+        except Exception:
+            return False
+        morsel = cookies.get("_oc_dash_session")
+        if morsel and self._verify_session_cookie(morsel.value):
+            return True
+        return False
+
+    def _send_login_page(self, error_msg=""):
+        """返回登录页面 HTML"""
+        error_html = ""
+        if error_msg:
+            error_html = '<div class="error">%s</div>' % error_msg
+        html = '''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenClaw Dashboard — 登录</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       background: #0f172a; color: #e2e8f0; display: flex; align-items: center;
+       justify-content: center; min-height: 100vh; }
+.login-box { background: #1e293b; border-radius: 12px; padding: 40px;
+             width: 380px; box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
+.login-box h1 { font-size: 22px; margin-bottom: 8px; color: #38bdf8; }
+.login-box p { font-size: 13px; color: #94a3b8; margin-bottom: 24px; }
+.login-box label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 6px; }
+.login-box input[type=password] { width: 100%%; padding: 10px 14px; border: 1px solid #334155;
+       border-radius: 8px; background: #0f172a; color: #e2e8f0; font-size: 15px;
+       outline: none; transition: border 0.2s; }
+.login-box input[type=password]:focus { border-color: #38bdf8; }
+.login-box button { width: 100%%; padding: 10px; margin-top: 16px; border: none;
+       border-radius: 8px; background: #2563eb; color: #fff; font-size: 15px;
+       cursor: pointer; transition: background 0.2s; }
+.login-box button:hover { background: #1d4ed8; }
+.error { background: #7f1d1d; color: #fca5a5; padding: 8px 12px; border-radius: 6px;
+         font-size: 13px; margin-bottom: 16px; }
+.lock-icon { font-size: 36px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="login-box">
+  <div class="lock-icon">🔒</div>
+  <h1>OpenClaw Dashboard</h1>
+  <p>请输入 API Key 以访问诊断面板</p>
+  %s
+  <form method="POST" action="/login" autocomplete="off">
+    <label for="key">API Key</label>
+    <input type="password" id="key" name="key" placeholder="输入 API Key..." autofocus required>
+    <button type="submit">登 录</button>
+  </form>
+</div>
+</body>
+</html>''' % error_html
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        # 防止缓存登录页
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, format, *args):
         pass
@@ -3869,8 +3982,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         # === POST /api/report — 采集端上报 ===
+        # 登录处理（公开路径）
+        if path == "/login":
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8")
+                # 解析 form 数据
+                form_params = parse_qs(body)
+                submitted_key = form_params.get("key", [""])[0].strip()
+                if not self.api_key:
+                    # 未配置 api_key，直接放行
+                    self.send_response(302)
+                    self.send_header("Location", "/")
+                    self.end_headers()
+                    return
+                if hmac.compare_digest(submitted_key, self.api_key):
+                    cookie_val = self._make_session_cookie()
+                    self.send_response(302)
+                    self.send_header("Location", "/")
+                    self.send_header("Set-Cookie",
+                        "_oc_dash_session=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400" % cookie_val)
+                    self.end_headers()
+                else:
+                    self._send_login_page(error_msg="API Key 错误，请重试")
+            except Exception:
+                self._send_login_page(error_msg="请求异常，请重试")
+            return
+
+        # Collector 上报（Bearer token 认证，不走 session）
         if path == "/api/report":
             self._handle_report()
+            return
+
+        # 以下路由需要 Dashboard 登录
+        if not self._check_dashboard_auth():
+            self._send_json({"error": "Unauthorized"}, 401)
             return
 
         if not self._check_token(params):
@@ -3925,6 +4071,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
+
+        # Dashboard 访问认证（公开路径和 collector 上报不拦截）
+        if path not in self._PUBLIC_PATHS and not path.startswith("/api/report"):
+            if not self._check_dashboard_auth():
+                self._send_login_page()
+                return
 
         if not self._check_token(params):
             self._send_json({"error": "Unauthorized"}, 403)
@@ -4516,6 +4668,7 @@ def main():
     DashboardHandler.node_store = node_store
     DashboardHandler.access_token = args.token if args.token else None
     DashboardHandler.api_key = api_key if api_key else None
+    DashboardHandler._init_session_secret()  # 初始化 session 签名密钥
     DashboardHandler.config_path = config_path
     DashboardHandler.config_data = config_data
     DashboardHandler.advanced_mode = ADVANCED_MODE
