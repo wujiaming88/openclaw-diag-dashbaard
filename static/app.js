@@ -683,7 +683,7 @@ function renderModelCallsList(data) {
   mcPage = page;
 
   var html = '<div class="model-calls-scroll"><table class="model-calls-table"><thead><tr>';
-  html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>tok/s</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>💭</th><th>停止原因</th><th></th>';
+  html += '<th>时间</th><th>模型</th><th>推理耗时</th><th>tok/s</th><th>输入</th><th>输出</th><th>缓存</th><th>💭</th><th>停止原因</th><th></th>';
   html += '</tr></thead><tbody>';
 
   calls.forEach(function (mc, idx) {
@@ -718,7 +718,6 @@ function renderModelCallsList(data) {
     html += '<td>' + fmtTok(mcU.input || 0) + '</td>';
     html += '<td>' + fmtTok(mcU.output || 0) + '</td>';
     html += '<td>' + cacheStr + '</td>';
-    html += '<td class="cost">' + costStr + '</td>';
     html += '<td style="font-size:11px">' + thinkHtml + '</td>';
     html += '<td><span class="stop-tag ' + stopCls + '">' + escHtml(mc.stop_reason || '-') + '</span></td>';
     html += '<td style="font-size:11px;color:var(--text2)">▶</td>';
