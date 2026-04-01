@@ -528,8 +528,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         # 计算工具汇总
         total_tool_calls = sum(t.get("count", 0) for t in ts) if ts else raw.get("total_tool_calls", 0)
         total_tool_ms = sum(t.get("total_ms", 0) for t in ts)
-        tool_error_count = sum(int(t.get("count", 0) * (1 - t.get("success_rate", 1))) for t in ts)
-        avg_tool_ms = (total_tool_ms / total_tool_calls) if total_tool_calls else 0
+        tool_error_count = sum(t.get("error_count", 0) for t in ts) if ts else raw.get("total_errors", 0)
+        avg_tool_ms = (total_tool_ms / total_tool_calls) if total_tool_calls else raw.get("tool_avg_duration_ms", 0)
         # 推理统计
         infer_items = [m for m in mc if m.get("inference_ms", 0) > 0]
         total_infer_ms = sum(m.get("inference_ms", 0) for m in infer_items) or raw.get("total_inference_ms", 0)
