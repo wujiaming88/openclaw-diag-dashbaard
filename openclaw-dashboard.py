@@ -4253,18 +4253,21 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 info = get_system_info(self.data_store, self.config_path, self.config_data)
                 self._send_json(info)
             elif path == "/api/probes":
-                # 列出所有可用探测项
+                # 列出所有可用探测项（仅当本地有 openclaw CLI 时）
+                import shutil
+                has_openclaw = shutil.which("openclaw") is not None
                 probes_list = []
-                for name, probe in PROBES.items():
-                    probes_list.append({
-                        "name": name,
-                        "label": probe["label"],
-                        "description": probe["description"],
-                        "icon": probe.get("icon", ""),
-                        "format": probe["format"],
-                        "timeout": probe["timeout"],
-                    })
-                self._send_json({"probes": probes_list})
+                if has_openclaw:
+                    for name, probe in PROBES.items():
+                        probes_list.append({
+                            "name": name,
+                            "label": probe["label"],
+                            "description": probe["description"],
+                            "icon": probe.get("icon", ""),
+                            "format": probe["format"],
+                            "timeout": probe["timeout"],
+                        })
+                self._send_json({"probes": probes_list, "openclaw_available": has_openclaw})
             elif path == "/api/dashboard":
                 # 批量接口: 一次返回 summary + events + runs，减少前端请求数
                 date = params.get("date", [""])[0]

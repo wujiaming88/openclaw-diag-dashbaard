@@ -1437,9 +1437,13 @@ var probeResults = {};
 function fetchProbes() {
   // Probes only available for local mode (not node-scoped)
   api('/api/probes', function (data) {
-    if (data && data.probes) {
+    if (data && data.probes && data.openclaw_available) {
       probesList = data.probes;
       renderProbeCards();
+    } else {
+      // Hide probe section when openclaw CLI not available
+      var section = $('#probesSection');
+      if (section) section.style.display = 'none';
     }
   });
 }
