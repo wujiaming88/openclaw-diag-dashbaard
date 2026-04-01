@@ -11,8 +11,7 @@ ExecStart=/bin/sh -c 'exec /usr/bin/python3 /opt/openclaw-diag/openclaw-dashboar
     --port ${OC_DIAG_PORT:-9090} \
     --host ${OC_DIAG_HOST:-0.0.0.0} \
     --no-browser \
-    ${OC_DIAG_API_KEY:+--api-key $OC_DIAG_API_KEY} \
-    ${OC_DIAG_ADVANCED:+--advanced}'
+    ${OC_DIAG_API_KEY:+--api-key $OC_DIAG_API_KEY}'
 Restart=on-failure
 RestartSec=5
 WatchdogSec=30

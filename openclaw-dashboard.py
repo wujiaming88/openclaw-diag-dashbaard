@@ -52,8 +52,7 @@ from urllib.parse import urlparse, parse_qs
 # ============================================================
 # 全局常量
 # ============================================================
-VERSION = "4.1.0"
-ADVANCED_MODE = False  # 全局模式标志，由 main() 设置
+VERSION = "4.2.0"
 MAX_LOG_LINES = 50000  # 大文件只解析最后 N 行
 
 # ============================================================
@@ -2098,6 +2097,30 @@ class DataStore(object):
         self._all_messages = None
         self._tool_data_loaded = False
         self._lock = threading.Lock()
+        self._debug_log_cache = {}  # date -> (monotonic_time, bool)
+        self._DEBUG_LOG_CACHE_TTL = 10  # 秒
+
+    def has_debug_logs(self, date=None):
+        """自动检测是否有 debug 日志可用（带 10s TTL 缓存）"""
+        import time as _time
+        if not date:
+            dates = self.get_dates()
+            date = dates[0] if dates else ""
+        if not date:
+            return False
+        cached = self._debug_log_cache.get(date)
+        if cached and (_time.monotonic() - cached[0]) < self._DEBUG_LOG_CACHE_TTL:
+            return cached[1]
+        # 检查日志文件是否存在且有 runs 数据
+        filepath = os.path.join(self.log_dir, "openclaw-%s.log" % date)
+        result = os.path.isfile(filepath)
+        if result:
+            # 进一步验证: 尝试加载 runs
+            runs = self._load_runs(date)
+            # 只有非虚拟 runs 才算有 debug 日志
+            result = any(not r.get("virtual") for r in runs.values()) if runs else False
+        self._debug_log_cache[date] = (_time.monotonic(), result)
+        return result
 
     def start_preload(self):
         """后台线程预加载 session 数据，不阻塞 HTTP 服务"""
@@ -2605,9 +2628,14 @@ class DataStore(object):
         self._events_cache[date] = (mtime, events)
         return events
 
-    def get_summary(self, date, advanced_mode=False):
+    def get_summary(self, date, advanced_mode=None):
         # TTL 缓存
         import time as _time
+
+        # 自动检测: 如果未显式指定，自动判断
+        if advanced_mode is None:
+            advanced_mode = self.has_debug_logs(date)
+
         cache_key = f"{date}:{advanced_mode}"
         cached = self._summary_cache.get(cache_key)
         if cached and (_time.monotonic() - cached[0]) < self._CACHE_TTL:
@@ -2618,8 +2646,8 @@ class DataStore(object):
         return result
 
     def _compute_summary(self, date, advanced_mode=False):
-        # 标准模式：只从 session 文件获取统计
-        # 高级模式：额外从 debug 日志获取 Run 级统计
+        # 自动检测模式：只从 session 文件获取统计
+        # 有 debug 日志时：额外从 debug 日志获取 Run 级统计
         
         # session 级推理统计（两种模式都有）
         self._get_tool_data()  # 确保加载
@@ -2787,7 +2815,7 @@ class DataStore(object):
                 result["models"] = sorted(models)
             return result
 
-        # === 高级模式：添加 Run 级别统计 ===
+        # === debug 日志可用时：添加 Run 级别统计 ===
         runs = self._load_runs(date)
         if not runs:
             result["total_runs"] = 0
@@ -3524,7 +3552,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
     config_path = None
     config_data = None
     static_dir = None  # 静态文件目录
-    advanced_mode = False  # 运行模式
     no_local = False  # 纯远程模式
     _session_secret = None  # HMAC 签名密钥（启动时随机生成）
 
@@ -3855,7 +3882,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 pass
             result = {
                 "date": date,
-                "summary": self.data_store.get_summary(date, self.advanced_mode),
+                "summary": self.data_store.get_summary(date),
                 "restarts": self.data_store.get_restarts(date),
                 "model_calls": self.data_store.get_model_calls(date, mc_page, mc_per_page),
                 "probes_available": list(PROBES.keys()),
@@ -3866,7 +3893,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             if not date:
                 dates = self.data_store.get_dates()
                 date = dates[0] if dates else ""
-            self._send_json(self.data_store.get_summary(date, self.advanced_mode) if date else {"total_runs": 0})
+            self._send_json(self.data_store.get_summary(date) if date else {"total_runs": 0})
         elif endpoint == "model_calls":
             date = params.get("date", [""])[0]
             if not date:
@@ -3903,9 +3930,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                         break
                 if session_files_available:
                     break
+            date = params.get("date", [""])[0]
             self._send_json({
-                "mode": "advanced" if self.advanced_mode else "standard",
-                "debug_log_available": debug_log_available,
+                "mode": "auto",
+                "debug_log_available": self.data_store.has_debug_logs(date or None),
                 "session_files_available": session_files_available,
             })
         else:
@@ -4205,10 +4233,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 dates = self.data_store.get_dates()
                 self._send_json(dates)
             elif path == "/api/mode":
-                # 返回当前运行模式信息
-                log_dir = self.data_store.log_dir
+                # 返回自动检测结果
+                date = params.get("date", [""])[0]
                 sessions_dirs = self.data_store.sessions_dirs
-                debug_log_available = os.path.isdir(log_dir) and len(glob.glob(os.path.join(log_dir, "openclaw-*.log"))) > 0
                 session_files_available = False
                 for d in sessions_dirs:
                     for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
@@ -4218,8 +4245,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                     if session_files_available:
                         break
                 self._send_json({
-                    "mode": "advanced" if self.advanced_mode else "standard",
-                    "debug_log_available": debug_log_available,
+                    "mode": "auto",
+                    "debug_log_available": self.data_store.has_debug_logs(date or None),
                     "session_files_available": session_files_available,
                 })
             elif path == "/api/system_info":
@@ -4264,12 +4291,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 per_page = max(1, min(per_page, 500))
                 result = {
                     "date": date,
-                    "summary": self.data_store.get_summary(date, self.advanced_mode),
+                    "summary": self.data_store.get_summary(date),
                     "restarts": self.data_store.get_restarts(date),
                     "probes_available": list(PROBES.keys()),
                 }
-                # 高级模式额外返回 events, runs, errors
-                if self.advanced_mode:
+                # 自动检测 debug 日志可用性，有就返回 events/runs
+                _has_debug = self.data_store.has_debug_logs(date)
+                if _has_debug:
                     result["events"] = self.data_store.get_events_summary(date)
                     result["runs"] = self.data_store.get_runs_list(date, page, per_page)
                     result["errors"] = self.data_store.get_events_errors(date)
@@ -4295,12 +4323,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 if not date:
                     self._send_json({"total_runs": 0})
                     return
-                summary = self.data_store.get_summary(date, self.advanced_mode)
+                summary = self.data_store.get_summary(date)
                 self._send_json(summary)
             elif path == "/api/runs":
-                if not self.advanced_mode:
-                    self._send_json({"available": False, "message": "需要高级诊断模式 (--advanced)"})
-                    return
                 date = params.get("date", [""])[0]
                 if not date:
                     dates = self.data_store.get_dates()
@@ -4322,9 +4347,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 result = self.data_store.get_runs_list(date, page, per_page)
                 self._send_json(result)
             elif path.startswith("/api/run/"):
-                if not self.advanced_mode:
-                    self._send_json({"available": False, "message": "需要高级诊断模式 (--advanced)"})
-                    return
                 run_id = path[len("/api/run/"):]
                 date = params.get("date", [""])[0]
                 if not date or not run_id:
@@ -4337,9 +4359,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                     self._send_json(detail)
             # === New event API endpoints ===
             elif path == "/api/events":
-                if not self.advanced_mode:
-                    self._send_json({"available": False, "message": "需要高级诊断模式 (--advanced)"})
-                    return
                 date = params.get("date", [""])[0]
                 if not date:
                     dates = self.data_store.get_dates()
@@ -4350,9 +4369,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 result = self.data_store.get_events_summary(date)
                 self._send_json(result)
             elif path == "/api/events/timeline":
-                if not self.advanced_mode:
-                    self._send_json({"available": False, "message": "需要高级诊断模式 (--advanced)"})
-                    return
                 date = params.get("date", [""])[0]
                 if not date:
                     dates = self.data_store.get_dates()
@@ -4375,9 +4391,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 result = self.data_store.get_events_timeline(date, page, per_page, category or None)
                 self._send_json(result)
             elif path == "/api/events/webhooks":
-                if not self.advanced_mode:
-                    self._send_json({"available": False, "message": "需要高级诊断模式 (--advanced)"})
-                    return
                 date = params.get("date", [""])[0]
                 if not date:
                     dates = self.data_store.get_dates()
@@ -4388,9 +4401,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 result = self.data_store.get_events_webhooks(date)
                 self._send_json(result)
             elif path == "/api/events/messages":
-                if not self.advanced_mode:
-                    self._send_json({"available": False, "message": "需要高级诊断模式 (--advanced)"})
-                    return
                 date = params.get("date", [""])[0]
                 if not date:
                     dates = self.data_store.get_dates()
@@ -4401,9 +4411,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
                 result = self.data_store.get_events_messages(date)
                 self._send_json(result)
             elif path == "/api/events/errors":
-                if not self.advanced_mode:
-                    self._send_json({"available": False, "message": "需要高级诊断模式 (--advanced)"})
-                    return
                 date = params.get("date", [""])[0]
                 if not date:
                     dates = self.data_store.get_dates()
@@ -4663,7 +4670,6 @@ def main():
     parser.add_argument("--sessions-dir", type=str, default="", help="会话文件目录")
     parser.add_argument("--token", type=str, default="", help="访问令牌 (可选)")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
-    parser.add_argument("--advanced", action="store_true", help="启用高级诊断模式 (需要 debug 日志)")
     parser.add_argument("--api-key", type=str, default="", help="上报认证密钥 (或环境变量 DIAG_API_KEY)")
     parser.add_argument("--no-local", action="store_true", help="不加载本地数据 (纯远程模式)")
     parser.add_argument("--cli", action="store_true", help="CLI 模式（不启动 web 服务）")
@@ -4679,75 +4685,47 @@ def main():
         run_cli_mode(args)
         return
 
-    # 设置全局模式标志
-    global ADVANCED_MODE
-    ADVANCED_MODE = args.advanced
-
     # 路径检测
     log_dir = detect_log_dir(args.log_dir)
     sessions_dirs = detect_sessions_dirs(args.sessions_dir)
 
-    # 检测 OpenClaw 配置（高级模式才检查 debug 日志配置）
-    config_ok = True
-    config_warnings = []
-    config_path = None
-    config_data = None
-    if ADVANCED_MODE:
-        config_ok, config_warnings, config_path, config_data = check_openclaw_config()
-    else:
-        # 标准模式：只读取配置文件获取基本信息，不检查 debug 日志配置
-        _, _, config_path, config_data = check_openclaw_config()
-        config_ok = True  # 标准模式不需要 debug 配置
+    # 读取配置文件获取基本信息
+    _, _, config_path, config_data = check_openclaw_config()
+
+    # 初始化数据存储（用于启动时检测）
+    store = DataStore(log_dir, sessions_dirs)
+
+    # 自动检测 debug 日志
+    has_debug = store.has_debug_logs()
 
     # 打印启动信息
-    mode_label = "高级诊断模式" if ADVANCED_MODE else "标准模式"
+    debug_indicator = "✓" if has_debug else "✗"
     print("")
     print("🦞 OpenClaw 诊断面板 v%s" % VERSION)
     print("━" * 35)
-    print("模式: %s" % mode_label)
-
-    if ADVANCED_MODE:
-        print("数据源: debug 日志 + session 文件 + 系统信息")
-        print("日志目录: %s" % log_dir)
-        if sessions_dirs:
-            print("Session 目录: %s" % ", ".join(sessions_dirs))
-        if config_ok:
-            print("[✓] diagnostics.enabled = true")
-            print("[✓] logging.level = debug")
-        for w in config_warnings:
-            print(w)
-    else:
-        print("数据源: session 文件 + 系统信息")
-        if sessions_dirs:
-            total_sessions = 0
-            for d in sessions_dirs:
-                for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
-                    total_sessions += len(glob.glob(os.path.join(d, _ep)))
-            print("Session 目录: %s" % ", ".join(sessions_dirs))
-        print("日志目录: %s (仅用于重启检测)" % log_dir)
+    print("模式: 自动检测 (debug 日志: %s)" % debug_indicator)
+    print("数据源: session 文件 + 系统信息%s" % (" + debug 日志" if has_debug else ""))
+    print("日志目录: %s" % log_dir)
+    if sessions_dirs:
+        print("Session 目录: %s" % ", ".join(sessions_dirs))
 
     if os.path.isdir(log_dir):
         log_files_count = len(glob.glob(os.path.join(log_dir, "openclaw-*.log")))
-        if ADVANCED_MODE:
+        if log_files_count > 0:
             print("日志文件: %d 个" % log_files_count)
-    else:
-        if ADVANCED_MODE:
-            print("[警告] 日志目录 %s 不存在, 等待日志生成..." % log_dir)
 
     if sessions_dirs:
         total_sessions = 0
         for d in sessions_dirs:
             for _ep in ["*.jsonl", "*.jsonl.reset.*", "*.jsonl.deleted.*"]:
                 total_sessions += len(glob.glob(os.path.join(d, _ep)))
-        if ADVANCED_MODE:
-            print("会话文件: %d 个" % total_sessions)
+        print("会话文件: %d 个" % total_sessions)
     else:
         print("[警告] 会话目录未找到, Token 数据将不可用")
 
-    # 初始化数据存储
-    store = DataStore(log_dir, sessions_dirs)
+    # 预加载 session 数据
     if not args.no_local:
-        store.start_preload()  # 后台预加载 session 数据
+        store.start_preload()
 
     # 初始化节点存储
     node_store = NodeStore()
@@ -4767,7 +4745,6 @@ def main():
     DashboardHandler._init_session_secret()  # 初始化 session 签名密钥
     DashboardHandler.config_path = config_path
     DashboardHandler.config_data = config_data
-    DashboardHandler.advanced_mode = ADVANCED_MODE
     DashboardHandler.no_local = args.no_local
     # 静态文件目录: 脚本同级的 static/ 文件夹
     script_dir = os.path.dirname(os.path.abspath(__file__))

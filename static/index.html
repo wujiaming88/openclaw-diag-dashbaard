@@ -80,7 +80,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
     </div>
   </div>
 
-  <!-- 消息处理流水线 (仅高级模式) -->
+  <!-- 消息处理流水线 (需 debug 日志) -->
   <div id="pipelineSection" class="section collapsible" style="display:none">
     <div class="section-header" onclick="toggleSection(this)">
       <h2>📡 消息处理流水线</h2>
@@ -130,7 +130,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
       <div class="locked-icon">🔒</div>
       <div class="locked-text">
         <strong>Run 详情</strong> — 需要高级诊断模式
-        <div class="locked-hint">启动时添加 <code>--advanced</code> 参数以解锁此功能</div>
+        <div class="locked-hint">检测到 debug 日志后自动解锁此功能</div>
       </div>
     </div>
   </div>
@@ -141,15 +141,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
       <div class="locked-icon">🔒</div>
       <div class="locked-text">
         <strong>事件管道 & 错误追踪</strong> — 需要高级诊断模式
-        <div class="locked-hint">启动时添加 <code>--advanced</code> 参数，并开启 <code>diagnostics.enabled</code> + <code>logging.level: debug</code></div>
+        <div class="locked-hint">需要开启 <code>diagnostics.enabled</code> + <code>logging.level: debug</code></div>
       </div>
     </div>
   </div>
 
-  <!-- Run 列表 (仅高级模式) -->
+  <!-- Run 列表 (需 debug 日志) -->
   <div id="content"></div>
 
-  <!-- 错误列表 (仅高级模式) -->
+  <!-- 错误列表 (需 debug 日志) -->
   <div id="errorsSection" class="section collapsible" style="display:none">
     <div class="section-header" onclick="toggleSection(this)">
       <h2>⚠️ 错误 <span class="section-badge error" id="errorCount"></span></h2>

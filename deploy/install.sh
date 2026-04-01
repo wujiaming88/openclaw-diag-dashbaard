@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 #  OpenClaw Diagnostic Dashboard — One-Click Installer
-#  Usage: ./deploy/install.sh [--port 9090] [--api-key xxx] [--advanced]
+#  Usage: ./deploy/install.sh [--port 9090] [--api-key xxx]
 # ============================================================
 set -euo pipefail
 
@@ -14,8 +14,6 @@ ENV_FILE="${ENV_DIR}/openclaw-diag.env"
 PORT="9090"
 HOST="0.0.0.0"
 API_KEY=""
-ADVANCED=""
-ADVANCED=""
 
 # ======================== Colors ========================
 RED='\033[0;31m'
@@ -43,13 +41,12 @@ Options:
   --port PORT       Listen port (default: 9090)
   --host HOST       Bind address (default: 0.0.0.0)
   --api-key KEY     Remote collector auth key
-  --advanced        Enable advanced diagnostics mode
   --uninstall       Remove installation and service
   --help            Show this help
 
 Examples:
   sudo ./deploy/install.sh
-  sudo ./deploy/install.sh --port 8765 --advanced
+  sudo ./deploy/install.sh --port 8765
   sudo ./deploy/install.sh --api-key my-secret --port 9090
   sudo ./deploy/install.sh --uninstall
 EOF
@@ -104,8 +101,6 @@ while [[ $# -gt 0 ]]; do
         --api-key)
             [[ -z "${2:-}" ]] && die "--api-key requires a value"
             API_KEY="$2"; shift 2 ;;
-        --advanced)
-            ADVANCED="--advanced"; shift ;;
         --uninstall)
             UNINSTALL=true; shift ;;
         --help|-h)
@@ -177,14 +172,10 @@ if [[ -f "${ENV_FILE}" ]]; then
     cp "${ENV_FILE}" "${ENV_FILE}.bak"
 fi
 
-# Build env vars for API key and advanced mode
+# Build env vars for API key
 ENV_API_KEY=""
-ENV_ADVANCED=""
 if [[ -n "${API_KEY}" ]]; then
     ENV_API_KEY="${API_KEY}"
-fi
-if [[ -n "${ADVANCED}" ]]; then
-    ENV_ADVANCED="1"
 fi
 
 cat > "${ENV_FILE}" <<EOF
@@ -194,7 +185,6 @@ cat > "${ENV_FILE}" <<EOF
 OC_DIAG_PORT=${PORT}
 OC_DIAG_HOST=${HOST}
 OC_DIAG_API_KEY=${ENV_API_KEY}
-OC_DIAG_ADVANCED=${ENV_ADVANCED}
 EOF
 
 chmod 600 "${ENV_FILE}"
@@ -217,8 +207,7 @@ ExecStart=/bin/sh -c 'exec /usr/bin/python3 ${INSTALL_DIR}/openclaw-dashboard.py
     --port \${OC_DIAG_PORT:-9090} \\
     --host \${OC_DIAG_HOST:-0.0.0.0} \\
     --no-browser \\
-    \${OC_DIAG_API_KEY:+--api-key \$OC_DIAG_API_KEY} \\
-    \${OC_DIAG_ADVANCED:+--advanced}'
+    \${OC_DIAG_API_KEY:+--api-key \$OC_DIAG_API_KEY}'
 Restart=on-failure
 RestartSec=5
 WatchdogSec=30

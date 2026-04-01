@@ -11,9 +11,8 @@ services:
       - OC_DIAG_PORT=${OC_DIAG_PORT:-9090}
       - OC_DIAG_HOST=0.0.0.0
       - OC_DIAG_API_KEY=${OC_DIAG_API_KEY:-}
-      - OC_DIAG_ADVANCED=${OC_DIAG_ADVANCED:-}
     volumes:
-      # Mount OpenClaw log directory (for advanced mode)
+      # Mount OpenClaw log directory (for debug log auto-detection)
       - ${OC_LOG_DIR:-/tmp/openclaw}:/tmp/openclaw:ro
       # Mount OpenClaw session directory (for local diagnostics)
       - ${OC_SESSIONS_DIR:-/root/.openclaw/agents}:/root/.openclaw/agents:ro

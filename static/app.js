@@ -15,7 +15,8 @@ var currentPage = 1;
 var perPage = 20;
 var mcPage = 1;
 var mcPerPage = 50;
-var dashboardMode = 'standard'; // 'standard' | 'advanced'
+var dashboardMode = 'auto'; // 'auto'
+var debugLogAvailable = false; // 自动检测结果
 var conversationLoaded = false;
 
 // ============================================================
@@ -155,7 +156,7 @@ function eventTagHtml(category) {
   return '<span class="event-tag ' + escHtml(category) + '">' + escHtml(label) + '</span>';
 }
 
-function isAdvanced() { return dashboardMode === 'advanced'; }
+function isAdvanced() { return debugLogAvailable; }
 
 // ============================================================
 // API 请求
@@ -186,10 +187,12 @@ function api(path, cb) {
 }
 
 function fetchMode(cb) {
+  var datePart = currentDate ? '?date=' + currentDate : '';
   var path = currentNode ? nodeApiPath('/api/mode') : '/api/mode';
-  api(path, function (data) {
-    if (data && data.mode) {
-      dashboardMode = data.mode;
+  api(path + datePart, function (data) {
+    if (data) {
+      dashboardMode = data.mode || 'auto';
+      debugLogAvailable = !!data.debug_log_available;
     }
     renderModeIndicator();
     if (cb) cb();
@@ -315,10 +318,10 @@ function fetchModelCalls(date, page, pp) {
 function renderModeIndicator() {
   var el = $('#modeIndicator');
   if (!el) return;
-  if (isAdvanced()) {
-    el.innerHTML = '<span class="mode-badge advanced">🔵 高级诊断模式</span>';
+  if (debugLogAvailable) {
+    el.innerHTML = '<span class="mode-badge advanced">🔵 自动检测 (debug 日志可用)</span>';
   } else {
-    el.innerHTML = '<span class="mode-badge standard">🟢 标准模式</span>';
+    el.innerHTML = '<span class="mode-badge standard">🟢 自动检测 (标准模式)</span>';
   }
   el.style.display = 'inline-block';
 }
@@ -490,7 +493,7 @@ function renderSummary(s) {
 }
 
 // ============================================================
-// 渲染 — 事件摘要卡片 (仅高级模式)
+// 渲染 — 事件摘要卡片 (需 debug 日志)
 // ============================================================
 function renderEventsSummary(data) {
   var el = $('#summaryCards3');
@@ -616,7 +619,7 @@ function renderToolDetails(details, toolName) {
 }
 
 // ============================================================
-// 渲染 — 错误列表 (仅高级模式)
+// 渲染 — 错误列表 (需 debug 日志)
 // ============================================================
 function renderErrors(data) {
   var sec = $('#errorsSection');
@@ -865,7 +868,7 @@ function renderLockedSections() {
 }
 
 // ============================================================
-// 渲染 — Run 列表 (仅高级模式)
+// 渲染 — Run 列表 (需 debug 日志)
 // ============================================================
 function renderRunList(data) {
   if (!isAdvanced()) return;
@@ -1701,7 +1704,10 @@ $('#dateSelect').addEventListener('change', function () {
   mcPage = 1;
   openRuns = {};
   conversationLoaded = false;
-  loadData();
+  // 切换日期时重新检测 debug 日志可用性
+  fetchMode(function () {
+    loadData();
+  });
 });
 
 $('#nodeSelect').addEventListener('change', function () {

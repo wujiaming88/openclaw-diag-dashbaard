@@ -13,7 +13,6 @@ COPY static/ static/
 ENV OC_DIAG_PORT=9090
 ENV OC_DIAG_HOST=0.0.0.0
 ENV OC_DIAG_API_KEY=""
-ENV OC_DIAG_ADVANCED=""
 
 EXPOSE 9090
 
@@ -24,5 +23,4 @@ ENTRYPOINT ["/bin/sh", "-c", \
     "exec python3 openclaw-dashboard.py --no-browser \
      --port ${OC_DIAG_PORT:-9090} \
      --host ${OC_DIAG_HOST:-0.0.0.0} \
-     ${OC_DIAG_API_KEY:+--api-key $OC_DIAG_API_KEY} \
-     ${OC_DIAG_ADVANCED:+--advanced}"]
+     ${OC_DIAG_API_KEY:+--api-key $OC_DIAG_API_KEY}"]

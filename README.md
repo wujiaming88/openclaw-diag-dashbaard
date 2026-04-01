@@ -39,11 +39,11 @@ A distributed diagnostic platform for [OpenClaw](https://github.com/nicepkg/open
 
 *KPI overview → probes → restart history → model calls → sessions → errors. Zero config needed.*
 
-### Advanced Mode — Full Page
+### With Debug Logs — Full Page
 
 ![Dashboard Advanced](docs/screenshots/dashboard-advanced.png)
 
-*Adds run-level details, event timeline, and debug log analysis.*
+*When debug logs are available, auto-shows run-level details, event timeline, and log analysis.*
 
 ### CLI Diagnostics
 
@@ -114,7 +114,8 @@ Standalone terminal diagnostic tool:
 - **Bash History** — Reverse-chronological command log (500 lines), searchable
 - **System Journal** — Last 24h journalctl logs (2000 lines), filterable
 
-### Advanced Mode (requires debug logs)
+### Debug Log Features (auto-detected)
+When debug logs are available, the dashboard automatically shows:
 - **Run Analysis** — Paginated run list with Gantt charts, inference segments, tool arguments
 - **Event Timeline** — Filterable event log with category badges
 - **Message Pipeline** — Queue → Enqueue → Dequeue → Run → Processed visualization
@@ -140,9 +141,6 @@ python3 openclaw-dashboard.py
 
 # With authentication (required for remote collectors)
 python3 openclaw-dashboard.py --api-key your-secret-key
-
-# Advanced mode (requires debug logs enabled)
-python3 openclaw-dashboard.py --advanced --api-key your-secret-key
 
 # Open http://localhost:9090
 ```
@@ -220,7 +218,6 @@ docker compose up -d
 OC_DIAG_PORT=9090 OC_DIAG_API_KEY=mysecret docker compose up -d
 
 # Advanced mode
-OC_DIAG_ADVANCED=1 docker compose up -d
 ```
 
 Docker mounts host log and session directories as read-only volumes for local diagnostics.
@@ -276,7 +273,7 @@ python3 openclaw-dashboard.py --port 9090 --api-key your-key
 | `GET /api/node/<id>/journalctl` | Remote node system journal |
 | `DELETE /api/node/<id>` | Remove node data |
 
-### Advanced Mode Endpoints (additional)
+### Debug Log Endpoints (auto-available when logs detected)
 
 | Endpoint | Description |
 |----------|-------------|
@@ -297,7 +294,6 @@ All endpoints support `date` parameter (defaults to latest available). JSON resp
 | `--port PORT` | `9090` | Listen port |
 | `--host HOST` | `0.0.0.0` | Bind address |
 | `--api-key KEY` | *(none)* | Authentication key (enables login gate + collector auth) |
-| `--advanced` | `false` | Enable advanced mode (requires debug logs) |
 | `--no-browser` | `false` | Don't auto-open browser |
 | `--no-local` | `false` | Pure remote mode (no local data) |
 | `--log-dir DIR` | auto-detect | Log directory |
@@ -314,8 +310,8 @@ All endpoints support `date` parameter (defaults to latest available). JSON resp
 ### Standard Mode (default)
 No configuration needed. Reads `~/.openclaw/agents/*/sessions/*.jsonl`.
 
-### Advanced Mode (`--advanced`)
-Requires in `~/.openclaw/openclaw.json`:
+### Debug Log Features (auto-detected)
+To enable run-level analysis, configure in `~/.openclaw/openclaw.json`:
 ```json
 {
   "diagnostics": { "enabled": true },

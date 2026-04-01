@@ -39,11 +39,11 @@
 
 *KPI 概览 → 探测 → 重启历史 → 模型调用 → 会话浏览 → 错误追踪。零配置即用。*
 
-### 高级模式 — 完整页面
+### Debug 日志可用时 — 完整页面
 
-![高级模式](docs/screenshots/dashboard-advanced.png)
+![Debug 日志模式](docs/screenshots/dashboard-advanced.png)
 
-*在标准模式基础上增加 Run 级详情、事件时间线、debug 日志分析。*
+*检测到 debug 日志时自动显示 Run 级详情、事件时间线、日志分析。*
 
 ### CLI 诊断
 
@@ -114,7 +114,8 @@
 - **命令历史** — 倒序命令日志（500 行），支持搜索
 - **系统日志** — 最近 24h journalctl（2000 行），可筛选
 
-### 高级模式（需 debug 日志）
+### Debug 日志功能（自动检测）
+当 debug 日志可用时，面板自动显示：
 - **Run 分析** — 分页 Run 列表、甘特图、推理分段、工具参数
 - **事件时间线** — 可筛选分页事件日志
 - **消息管道** — 队列 → 入队 → 出队 → Run → 处理 可视化
@@ -140,9 +141,6 @@ python3 openclaw-dashboard.py
 
 # 带认证（远程 Collector 必须）
 python3 openclaw-dashboard.py --api-key your-secret-key
-
-# 高级模式
-python3 openclaw-dashboard.py --advanced --api-key your-secret-key
 
 # 访问 http://localhost:9090
 ```
@@ -216,9 +214,6 @@ docker compose up -d
 
 # 自定义配置
 OC_DIAG_PORT=9090 OC_DIAG_API_KEY=mysecret docker compose up -d
-
-# 高级模式
-OC_DIAG_ADVANCED=1 docker compose up -d
 ```
 
 Docker 将宿主机日志和 session 目录以只读方式挂载用于本地诊断。
@@ -274,7 +269,7 @@ python3 openclaw-dashboard.py --port 9090 --api-key your-key
 | `GET /api/node/<id>/journalctl` | 远程节点系统日志 |
 | `DELETE /api/node/<id>` | 删除节点数据 |
 
-### 高级模式端点（额外）
+### Debug 日志端点（检测到日志时自动可用）
 
 | 端点 | 说明 |
 |------|------|
@@ -295,7 +290,6 @@ python3 openclaw-dashboard.py --port 9090 --api-key your-key
 | `--port PORT` | `9090` | 监听端口 |
 | `--host HOST` | `0.0.0.0` | 绑定地址 |
 | `--api-key KEY` | *(无)* | 认证密钥（启用登录门禁 + Collector 认证） |
-| `--advanced` | `false` | 启用高级模式（需 debug 日志） |
 | `--no-browser` | `false` | 不自动打开浏览器 |
 | `--no-local` | `false` | 纯远程模式（不加载本地数据） |
 | `--log-dir DIR` | 自动检测 | 日志目录 |
@@ -312,7 +306,7 @@ python3 openclaw-dashboard.py --port 9090 --api-key your-key
 ### 标准模式（默认）
 无需配置。读取 `~/.openclaw/agents/*/sessions/*.jsonl`。
 
-### 高级模式（`--advanced`）
+### Debug 日志功能（自动检测）
 需在 `~/.openclaw/openclaw.json` 中配置：
 ```json
 {
