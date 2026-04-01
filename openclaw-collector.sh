@@ -945,16 +945,29 @@ for _lf in _log_files:
                 _event_name = None
                 _is_error = False
                 _error_msg = ""
-                if "'event':" in _msg and "'runId':" in _msg:
-                    try:
-                        _d = _ast.literal_eval(_msg)
-                        if isinstance(_d, dict):
-                            _event_name = _d.get("event", "")
-                            _run_id = _d.get("runId", "")
-                            _is_error = _d.get("isError", False)
-                            _error_msg = str(_d.get("error", ""))
-                    except:
-                        pass
+                _run_model = ""
+                _run_provider = ""
+                if "'runId':" in _msg:
+                    # 用 regex 提取 runId (可靠，不依赖 ast.literal_eval)
+                    import re as _re
+                    _rid_m = _re.search(r"'runId':\s*'([a-f0-9-]+)'", _msg)
+                    if _rid_m:
+                        _run_id = _rid_m.group(1)
+                    _ev_m = _re.search(r"'event':\s*'([^']+)'", _msg)
+                    if _ev_m:
+                        _event_name = _ev_m.group(1)
+                    _err_m = _re.search(r"'isError':\s*(True|False)", _msg)
+                    if _err_m:
+                        _is_error = _err_m.group(1) == "True"
+                    _errmsg_m = _re.search(r"'error':\s*['\"](.+?)['\"](?:,\s*'|\})", _msg)
+                    if _errmsg_m:
+                        _error_msg = _errmsg_m.group(1)[:200]
+                    _model_m = _re.search(r"'model':\s*'([^']+)'", _msg)
+                    if _model_m:
+                        _run_model = _model_m.group(1)
+                    _prov_m = _re.search(r"'provider':\s*'([^']+)'", _msg)
+                    if _prov_m:
+                        _run_provider = _prov_m.group(1)
                 # 也兼容旧格式 runId=xxx
                 if not _run_id and "runId=" in _msg:
                     try:
@@ -968,13 +981,10 @@ for _lf in _log_files:
                     r = log_runs[_run_id]
                     if "start" in str(_event_name).lower():
                         r["start"] = _ts
-                        # 从事件中提取 agent/model
-                        if isinstance(_d, dict):
-                            r["agent"] = _d.get("agent", "") or _d.get("sessionKey", "").split(":")[1] if ":" in _d.get("sessionKey", "") else ""
-                            r["model"] = _d.get("model", "")
-                            r["channel"] = _d.get("channel", "") or _d.get("messageChannel", "")
+                        r["model"] = r["model"] or _run_model
                     if "end" in str(_event_name).lower():
                         r["end"] = _ts
+                        r["model"] = r["model"] or _run_model
                         if _is_error:
                             r["error"] = _error_msg
 
@@ -1014,16 +1024,23 @@ if _use_log_runs:
     for rid, r in log_runs.items():
         st = parse_time(r["start"]) if r["start"] else None
         et = parse_time(r["end"]) if r["end"] else None
+        # 只有 end 没有 start: 用 end 往前推 10 分钟作为搜索窗口
+        if et and not st:
+            st = et - __import__('datetime').timedelta(minutes=10)
         dur_ms = round((et - st).total_seconds() * 1000) if st and et else 0
-        # 匹配时间窗口内的 model_calls
+        # 匹配时间窗口内的 model_calls（所有 session）
+        _td5 = __import__('datetime').timedelta(seconds=10)
         matched_mcs = []
-        for sid, calls in calls_by_session.items():
-            for mc in calls:
-                mc_t = parse_time(mc.get("timestamp", ""))
-                if mc_t and st and et and st - __import__('datetime').timedelta(seconds=5) <= mc_t <= et + __import__('datetime').timedelta(seconds=5):
-                    matched_mcs.append(mc)
-                elif mc_t and st and not et and abs((mc_t - st).total_seconds()) < 600:
-                    matched_mcs.append(mc)
+        if st and et:
+            for _all_mc in model_calls:
+                mc_t = parse_time(_all_mc.get("timestamp", ""))
+                if mc_t and (st - _td5) <= mc_t <= (et + _td5):
+                    matched_mcs.append(_all_mc)
+        elif et:
+            for _all_mc in model_calls:
+                mc_t = parse_time(_all_mc.get("timestamp", ""))
+                if mc_t and abs((mc_t - et).total_seconds()) < 600:
+                    matched_mcs.append(_all_mc)
         matched_mcs.sort(key=lambda c: c.get("timestamp", ""))
         agent = r["agent"] or (matched_mcs[0].get("agent", "") if matched_mcs else "")
         model = r["model"] or (Counter(c.get("model","") for c in matched_mcs).most_common(1)[0][0] if matched_mcs else "")
@@ -1111,30 +1128,30 @@ if log_errors:
     errors_list = sorted(log_errors, key=lambda x: x.get("timestamp", ""), reverse=True)[:200]
 else:
     for mc in model_calls:
-    ts = mc.get("timestamp", "")
-    agent = mc.get("agent", "")
-    sr = str(mc.get("stopReason", "")).lower()
-    if "error" in sr:
-        errors_list.append({
-            "time": ts,
-            "severity": "error",
-            "type": "model",
-            "subsystem": agent,
-            "detail": "Model call ended with stopReason: %s" % mc.get("stopReason", ""),
-            "source_file": "",
-        })
-    for tc in mc.get("tool_calls", []):
-        ec = tc.get("exitCode")
-        if ec is not None and ec != 0:
-            tool_name = tc.get("name", tc.get("tool", "unknown"))
+        ts = mc.get("timestamp", "")
+        agent = mc.get("agent", "")
+        sr = str(mc.get("stopReason", "")).lower()
+        if "error" in sr:
             errors_list.append({
-                "time": tc.get("timestamp", ts),
-                "severity": "warn" if ec == 1 else "error",
-                "type": "tool",
+                "time": ts,
+                "severity": "error",
+                "type": "model",
                 "subsystem": agent,
-                "detail": "Tool '%s' exited with code %s" % (tool_name, ec),
+                "detail": "Model call ended with stopReason: %s" % mc.get("stopReason", ""),
                 "source_file": "",
             })
+        for tc in mc.get("tool_calls", []):
+            ec = tc.get("exitCode")
+            if ec is not None and ec != 0:
+                tool_name = tc.get("name", tc.get("tool", "unknown"))
+                errors_list.append({
+                    "time": tc.get("timestamp", ts),
+                    "severity": "warn" if ec == 1 else "error",
+                    "type": "tool",
+                    "subsystem": agent,
+                    "detail": "Tool '%s' exited with code %s" % (tool_name, ec),
+                    "source_file": "",
+                })
 
 errors_list = sorted(errors_list, key=lambda x: x.get("time", ""), reverse=True)[:200]
 
