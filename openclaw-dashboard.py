@@ -453,6 +453,46 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             "timestamp": _utcnow_iso(),
         })
 
+    @staticmethod
+    def _normalize_kpi(raw, payload):
+        """将 Collector 上报的 kpi 字段映射为前端 renderSummary 期望的字段名"""
+        mc = payload.get("model_calls", [])
+        ts = payload.get("tool_stats", [])
+        restarts = payload.get("restarts", [])
+        # 计算工具汇总
+        total_tool_calls = sum(t.get("count", 0) for t in ts) if ts else raw.get("total_tool_calls", 0)
+        total_tool_ms = sum(t.get("total_ms", 0) for t in ts)
+        tool_error_count = sum(int(t.get("count", 0) * (1 - t.get("success_rate", 1))) for t in ts)
+        avg_tool_ms = (total_tool_ms / total_tool_calls) if total_tool_calls else 0
+        # 推理统计
+        infer_items = [m for m in mc if m.get("inference_ms", 0) > 0]
+        total_infer_ms = sum(m.get("inference_ms", 0) for m in infer_items) or raw.get("total_inference_ms", 0)
+        avg_infer_ms = raw.get("avg_inference_ms", 0) or ((total_infer_ms / len(infer_items)) if infer_items else 0)
+        tps_items = [m.get("tokens_per_sec", 0) for m in mc if m.get("tokens_per_sec", 0) > 0]
+        avg_tps = (sum(tps_items) / len(tps_items)) if tps_items else 0
+        return {
+            # 前端 renderSummary 使用的字段 — 第一行
+            "session_model_call_count": raw.get("total_model_calls", len(mc)),
+            "session_avg_inference_ms": round(avg_infer_ms, 1),
+            "session_inference_count": len(infer_items) or raw.get("total_model_calls", 0),
+            "session_avg_tokens_per_sec": round(avg_tps, 1),
+            "session_total_inference_ms": total_infer_ms,
+            "restart_count": len(restarts),
+            "total_downtime_sec": 0,
+            # 第二行 — Token 统计
+            "total_tokens_output": raw.get("total_output_tokens", sum(m.get("output_tokens", 0) for m in mc)),
+            "total_tokens_input": raw.get("total_input_tokens", 0),
+            "total_cache_read": 0,
+            "total_cache_write": 0,
+            "cache_hit_ratio": round(raw.get("cache_hit_rate", 0) * 100, 1) if raw.get("cache_hit_rate", 0) <= 1 else raw.get("cache_hit_rate", 0),
+            # 第三行 — 工具统计
+            "tool_call_count": total_tool_calls,
+            "tool_error_count": tool_error_count,
+            "avg_tool_ms": round(avg_tool_ms, 1),
+            # 兼容: 保留原始字段
+            **raw,
+        }
+
     def _handle_node_route(self, path, params):
         """处理 /api/node/<node_id>/<endpoint> 路由"""
         # 解析 node_id 和 endpoint
@@ -482,9 +522,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         if not endpoint or endpoint == "dashboard":
             # 返回完整 dashboard 数据
             date = params.get("date", [""])[0]
+            raw_kpi = payload.get("kpi", payload.get("summary", {}))
+            summary = self._normalize_kpi(raw_kpi, payload)
             result = {
                 "date": date,
-                "summary": payload.get("kpi", payload.get("summary", {})),
+                "summary": summary,
                 "restarts": {"restarts": payload.get("restarts", []), "total": len(payload.get("restarts", [])), "current_pid": "", "current_since": ""},
                 "model_calls": {
                     "date": date,
@@ -498,8 +540,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             }
             self._send_json(result)
         elif endpoint == "summary":
-            # kpi 或 summary 字段均可
-            s = payload.get("kpi", payload.get("summary", {}))
+            # kpi 或 summary 字段均可，做字段映射
+            raw_kpi = payload.get("kpi", payload.get("summary", {}))
+            s = self._normalize_kpi(raw_kpi, payload)
             self._send_json(s)
         elif endpoint == "model_calls":
             mc = payload.get("model_calls", [])
