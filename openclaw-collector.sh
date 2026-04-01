@@ -1285,8 +1285,15 @@ try:
     body = resp.read().decode("utf-8")
     result = json.loads(body)
     if result.get("ok"):
+        nid = result.get("node_id", "")
         print("\033[32m✅ 上报成功！\033[0m (model_calls=%d, tools=%d, sessions=%d)" % (
             len(model_calls[:500]), total_tool_calls, len(sessions_list)), file=sys.stderr)
+        if nid:
+            print("NODE_ID=" + nid, file=sys.stderr)
+            try:
+                with open("/tmp/.openclaw-collector-nodeid", "w") as nf:
+                    nf.write(nid)
+            except: pass
         sys.exit(0)
     else:
         print("\033[31m❌ 上报失败: %s\033[0m" % result.get("error", "unknown"), file=sys.stderr)
@@ -1302,6 +1309,17 @@ except Exception as e:
     print("\033[31m❌ 未知错误: %s\033[0m" % str(e), file=sys.stderr)
     sys.exit(1)
 COLLECT_EOF
+    local exit_code=$?
+    # 首次上报成功后显示服务端分配的节点 ID
+    if [ -z "$_SHOWN_NODE_ID" ] && [ -f /tmp/.openclaw-collector-nodeid ]; then
+        local nid
+        nid=$(cat /tmp/.openclaw-collector-nodeid 2>/dev/null)
+        if [ -n "$nid" ]; then
+            echo -e "${GREEN}服务端分配节点 ID: ${BOLD}${nid}${NC}"
+            _SHOWN_NODE_ID=1
+        fi
+    fi
+    return $exit_code
 }
 
 # ============================================================
@@ -1320,12 +1338,17 @@ run_foreground() {
 }
 
 show_node_info() {
-    local ip
-    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    [ -z "$ip" ] && ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null)
-    [ -z "$ip" ] && ip="unknown"
-    echo -e "${CYAN}上报节点 IP: ${BOLD}${ip}${NC}"
     echo -e "${CYAN}上报目标: ${DASHBOARD_URL}${NC}"
+    echo -e "${CYAN}节点 IP 将由服务端分配（首次上报后显示）${NC}"
+}
+
+show_node_id_from_response() {
+    local resp="$1"
+    local nid
+    nid=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('node_id',''))" 2>/dev/null)
+    if [ -n "$nid" ]; then
+        echo -e "${GREEN}服务端分配节点 ID: ${BOLD}${nid}${NC}"
+    fi
 }
 
 run_daemon() {
