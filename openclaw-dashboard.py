@@ -4161,8 +4161,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         # Dashboard 访问认证（公开路径和 collector 上报不拦截）
         if path not in self._PUBLIC_PATHS and not path.startswith("/api/report"):
             if not self._check_dashboard_auth():
-                self._send_login_page()
-                return
+                # API 路径也接受 Bearer token 认证
+                auth_header = self.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer ") and self.api_key:
+                    token = auth_header[7:].strip()
+                    if hmac.compare_digest(token, self.api_key):
+                        pass  # Bearer 认证通过
+                    else:
+                        self._send_json({"error": "Invalid API key"}, 401)
+                        return
+                else:
+                    self._send_login_page()
+                    return
 
         if not self._check_token(params):
             self._send_json({"error": "Unauthorized"}, 403)
