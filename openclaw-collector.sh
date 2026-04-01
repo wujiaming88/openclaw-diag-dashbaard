@@ -1338,12 +1338,35 @@ run_foreground() {
 }
 
 show_node_info() {
-    local ip
-    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    [ -z "$ip" ] && ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null)
-    [ -z "$ip" ] && ip="unknown"
-    echo -e "${CYAN}本机 IP: ${BOLD}${ip}${NC}"
     echo -e "${CYAN}上报目标: ${DASHBOARD_URL}${NC}"
+    # 向服务端 ping 获取真实节点 ID（服务端看到的来源 IP）
+    local nid
+    nid=$(python3 -c "
+import json, sys
+try:
+    from urllib.request import Request, urlopen
+except ImportError:
+    from urllib2 import Request, urlopen
+url = '$DASHBOARD_URL' + '/api/ping'
+req = Request(url)
+req.add_header('Authorization', 'Bearer ' + '$API_KEY')
+try:
+    resp = urlopen(req, timeout=5)
+    data = json.loads(resp.read().decode('utf-8'))
+    print(data.get('node_id', ''))
+except:
+    pass
+" 2>/dev/null)
+    if [ -n "$nid" ]; then
+        echo -e "${GREEN}节点 ID: ${BOLD}${nid}${NC}  (服务端分配)"
+    else
+        # fallback: 本机 IP
+        local ip
+        ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+        [ -z "$ip" ] && ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null)
+        [ -z "$ip" ] && ip="unknown"
+        echo -e "${CYAN}本机 IP: ${BOLD}${ip}${NC}  (服务端不可达，仅供参考)"
+    fi
 }
 
 show_node_id_from_response() {

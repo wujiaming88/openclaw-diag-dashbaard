@@ -905,6 +905,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             self._handle_report()
             return
 
+        # Collector ping（返回客户端 IP，用于启动时显示节点 ID）
+        if path == "/api/ping":
+            auth_header = self.headers.get("Authorization", "")
+            token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+            if not self.api_key or token != self.api_key:
+                self._send_json({"error": "Unauthorized"}, 401)
+                return
+            client_ip = self.client_address[0] if self.client_address else "unknown"
+            self._send_json({"node_id": client_ip})
+            return
+
         # 以下路由需要 Dashboard 登录
         if not self._check_dashboard_auth():
             self._send_json({"error": "Unauthorized"}, 401)
