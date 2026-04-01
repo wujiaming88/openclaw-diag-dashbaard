@@ -231,9 +231,7 @@ tr.clickable:hover td{background:var(--hover)}
 .card.restart-card.warn .value{color:var(--orange)}
 
 /* 模式指示器 */
-.mode-badge{display:inline-block;padding:3px 12px;border-radius:12px;font-size:12px;font-weight:600;letter-spacing:.3px;vertical-align:middle;margin-left:8px}
-.mode-badge.standard{background:rgba(46,196,182,.15);color:var(--green);border:1px solid rgba(46,196,182,.3)}
-.mode-badge.advanced{background:rgba(58,134,255,.15);color:var(--blue);border:1px solid rgba(58,134,255,.3)}
+
 
 /* 锁定区域 */
 

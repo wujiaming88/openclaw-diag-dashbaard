@@ -194,7 +194,6 @@ function fetchMode(cb) {
       dashboardMode = data.mode || 'auto';
       debugLogAvailable = !!data.debug_log_available;
     }
-    renderModeIndicator();
     if (cb) cb();
   });
 }
@@ -308,18 +307,7 @@ function fetchModelCalls(date, page, pp) {
 }
 
 // ============================================================
-// 渲染 — 模式指示器
-// ============================================================
-function renderModeIndicator() {
-  var el = $('#modeIndicator');
-  if (!el) return;
-  if (debugLogAvailable) {
-    el.innerHTML = '<span class="mode-badge advanced">🔵 自动检测 (debug 日志可用)</span>';
-  } else {
-    el.innerHTML = '<span class="mode-badge standard">🟢 自动检测 (标准模式)</span>';
-  }
-  el.style.display = 'inline-block';
-}
+// (mode indicator removed)
 
 // ============================================================
 // (system info bar removed)
