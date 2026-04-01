@@ -515,7 +515,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     def _normalize_kpi(raw, payload):
         """将 Collector 上报的 kpi 字段映射为前端 renderSummary 期望的字段名"""
         mc = payload.get("model_calls", [])
-        ts = payload.get("tool_stats", [])
+        raw_ts = payload.get("tool_stats", [])
+        # Collector 发送的 tool_stats 可能是嵌套对象 {"by_tool": [...], "total_calls": N}
+        # 或直接是数组 [{name, count, ...}]
+        if isinstance(raw_ts, dict):
+            ts = raw_ts.get("by_tool", [])
+        elif isinstance(raw_ts, list):
+            ts = raw_ts
+        else:
+            ts = []
         restarts = payload.get("restarts", [])
         # 计算工具汇总
         total_tool_calls = sum(t.get("count", 0) for t in ts) if ts else raw.get("total_tool_calls", 0)
@@ -642,8 +650,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         elif endpoint == "sessions":
             self._send_json(payload.get("sessions", []))
         elif endpoint == "restarts":
-            restarts = payload.get("restarts", [])
-            self._send_json({"restarts": restarts, "total": len(restarts), "current_pid": "", "current_since": ""})
+            self._send_json(self._normalize_restarts(payload.get("restarts", [])))
         elif endpoint == "thinking_stats":
             self._send_json(payload.get("thinking_stats", {}))
         elif endpoint == "system_events":
