@@ -908,112 +908,209 @@ summary = {
     "thinking_avg_ratio": round(thinking_ratio_sum / thinking_calls_count, 3) if thinking_calls_count > 0 else 0,
 }
 
-# ========== Build runs, events timeline, errors from session data ==========
+# ========== Build runs, events timeline, errors ==========
+# 策略: 优先从 /tmp/openclaw 日志构建 Run，日志不存在/无事件时降级到 session 数据
 runs_list = []
 events_timeline = []
 errors_list = []
 
-# --- Build runs from model_calls: split by session_id + time gap (>90s = new run) ---
 from collections import defaultdict, Counter
-RUN_GAP_SEC = 90  # 两次 model_call 间隔超过 90 秒视为新 Run
+import ast as _ast
 
-calls_by_session = defaultdict(list)
-for mc in model_calls:
-    sid = mc.get("session_id", "")
-    if sid:
-        calls_by_session[sid].append(mc)
+# --- Phase 1: 尝试从 debug 日志提取 Run 事件 ---
+log_runs = {}  # runId -> {start, end, event, error, ...}
+log_errors = []
+log_timeline = []
 
-run_seq = 0
-for sid, calls in calls_by_session.items():
-    calls_sorted = sorted(calls, key=lambda c: c.get("timestamp", ""))
-    if not calls_sorted:
-        continue
-    # Split into runs by time gap
-    run_groups = []
-    current_group = [calls_sorted[0]]
-    for i in range(1, len(calls_sorted)):
-        prev_t = parse_time(calls_sorted[i-1].get("timestamp", ""))
-        curr_t = parse_time(calls_sorted[i].get("timestamp", ""))
-        if prev_t and curr_t and (curr_t - prev_t).total_seconds() > RUN_GAP_SEC:
-            run_groups.append(current_group)
-            current_group = []
-        current_group.append(calls_sorted[i])
-    if current_group:
-        run_groups.append(current_group)
+log_today = os.path.join(log_dir, "openclaw-%s.log" % today)
+_log_files = sorted(glob.glob(os.path.join(log_dir, "openclaw-*.log"))) if os.path.isdir(log_dir) else []
 
-    for grp in run_groups:
-        run_seq += 1
-        start_ts = grp[0].get("timestamp", "")
-        end_ts = grp[-1].get("timestamp", "")
-        dur_ms = 0
-        st = parse_time(start_ts)
-        et = parse_time(end_ts)
-        if st and et:
-            dur_ms = round((et - st).total_seconds() * 1000)
-        model_counts = Counter(c.get("model", "") for c in grp)
-        top_model = model_counts.most_common(1)[0][0] if model_counts else ""
-        agent = grp[0].get("agent", "")
-        tc = sum(len(c.get("tool_calls", [])) for c in grp)
-        tok_out = sum(c.get("output_tokens", 0) or 0 for c in grp)
-        infer = sum(c.get("inference_ms", 0) or 0 for c in grp)
-        err_cnt = 0
-        for c in grp:
-            sr = str(c.get("stopReason", "")).lower()
-            if "error" in sr:
-                err_cnt += 1
-            for t in c.get("tool_calls", []):
-                ec = t.get("exitCode")
-                if ec is not None and ec != 0:
-                    err_cnt += 1
-        status = "completed" if err_cnt == 0 else "error"
+for _lf in _log_files:
+    try:
+        with open(_lf, 'r', encoding='utf-8', errors='replace') as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    _obj = json.loads(_line)
+                except:
+                    continue
+                _msg = str(_obj.get("1", ""))
+                _ts = _obj.get("time", "") or _obj.get("date", "")
+                _level = _obj.get("_meta", {}).get("logLevelName", "") if isinstance(_obj.get("_meta"), dict) else ""
+
+                # 解析嵌入的 Python dict 格式事件: {'event': 'embedded_run_agent_start/end', 'runId': ...}
+                _run_id = None
+                _event_name = None
+                _is_error = False
+                _error_msg = ""
+                if "'event':" in _msg and "'runId':" in _msg:
+                    try:
+                        _d = _ast.literal_eval(_msg)
+                        if isinstance(_d, dict):
+                            _event_name = _d.get("event", "")
+                            _run_id = _d.get("runId", "")
+                            _is_error = _d.get("isError", False)
+                            _error_msg = str(_d.get("error", ""))
+                    except:
+                        pass
+                # 也兼容旧格式 runId=xxx
+                if not _run_id and "runId=" in _msg:
+                    try:
+                        _run_id = _msg.split("runId=")[1].split(" ")[0].split("\n")[0].strip("'\"")
+                    except:
+                        pass
+
+                if _run_id:
+                    if _run_id not in log_runs:
+                        log_runs[_run_id] = {"run_id": _run_id, "start": None, "end": None, "error": None, "agent": "", "model": "", "channel": ""}
+                    r = log_runs[_run_id]
+                    if "start" in str(_event_name).lower():
+                        r["start"] = _ts
+                        # 从事件中提取 agent/model
+                        if isinstance(_d, dict):
+                            r["agent"] = _d.get("agent", "") or _d.get("sessionKey", "").split(":")[1] if ":" in _d.get("sessionKey", "") else ""
+                            r["model"] = _d.get("model", "")
+                            r["channel"] = _d.get("channel", "") or _d.get("messageChannel", "")
+                    if "end" in str(_event_name).lower():
+                        r["end"] = _ts
+                        if _is_error:
+                            r["error"] = _error_msg
+
+                # 收集日志级别错误
+                if _level in ("ERROR", "WARN") and _msg:
+                    _subsystem = ""
+                    if isinstance(_obj.get("_meta"), dict):
+                        _subsystem = _obj["_meta"].get("name", "")
+                    log_errors.append({
+                        "timestamp": _ts, "severity": _level,
+                        "type": "gateway" if "gateway" in str(_subsystem).lower() else "system",
+                        "subsystem": _subsystem[:50] if isinstance(_subsystem, str) else "",
+                        "message": _msg[:300], "detail": _msg[:500],
+                    })
+
+                # 收集关键事件到 timeline
+                if _run_id or _level in ("ERROR",) or "inbound" in _msg.lower() or "outbound" in _msg.lower():
+                    log_timeline.append({
+                        "timestamp": _ts,
+                        "type": _event_name or ("ERROR" if _level == "ERROR" else "MESSAGE" if "inbound" in _msg.lower() or "outbound" in _msg.lower() else "LOG"),
+                        "detail": _msg[:200],
+                    })
+    except:
+        pass
+
+# --- Phase 2: 决定 Run 数据来源 ---
+_use_log_runs = len(log_runs) > 0
+
+if _use_log_runs:
+    # 日志有 Run 事件 → 用日志 Run，匹配 session 的 model_calls 填充详情
+    calls_by_session = defaultdict(list)
+    for mc in model_calls:
+        sid = mc.get("session_id", "")
+        if sid:
+            calls_by_session[sid].append(mc)
+
+    for rid, r in log_runs.items():
+        st = parse_time(r["start"]) if r["start"] else None
+        et = parse_time(r["end"]) if r["end"] else None
+        dur_ms = round((et - st).total_seconds() * 1000) if st and et else 0
+        # 匹配时间窗口内的 model_calls
+        matched_mcs = []
+        for sid, calls in calls_by_session.items():
+            for mc in calls:
+                mc_t = parse_time(mc.get("timestamp", ""))
+                if mc_t and st and et and st - __import__('datetime').timedelta(seconds=5) <= mc_t <= et + __import__('datetime').timedelta(seconds=5):
+                    matched_mcs.append(mc)
+                elif mc_t and st and not et and abs((mc_t - st).total_seconds()) < 600:
+                    matched_mcs.append(mc)
+        matched_mcs.sort(key=lambda c: c.get("timestamp", ""))
+        agent = r["agent"] or (matched_mcs[0].get("agent", "") if matched_mcs else "")
+        model = r["model"] or (Counter(c.get("model","") for c in matched_mcs).most_common(1)[0][0] if matched_mcs else "")
+        tc = sum(len(c.get("tool_calls", [])) for c in matched_mcs)
+        tok_out = sum(c.get("output_tokens", 0) or 0 for c in matched_mcs)
+        infer = sum(c.get("inference_ms", 0) or 0 for c in matched_mcs)
+        err_cnt = 1 if r["error"] else 0
+        status = "error" if r["error"] else "completed"
         runs_list.append({
-            "run_id": "%s#%d" % (sid[:12], run_seq),
-            "agent": agent,
-            "session_key": sid,
-            "start": start_ts,
-            "end": end_ts,
-            "model": top_model,
-            "channel": "",
-            "tool_count": tc,
-            "model_count": len(grp),
-            "error_count": err_cnt,
-            "duration_ms": dur_ms,
-            "infer_ms": infer,
-            "tool_ms": 0,
-            "token_output": tok_out,
-            "status": status,
-            "virtual": False,
-            "model_calls": grp[:50],
+            "run_id": rid, "agent": agent, "session_key": "",
+            "start": r["start"] or "", "end": r["end"] or "",
+            "model": model, "channel": r["channel"],
+            "tool_count": tc, "model_count": len(matched_mcs), "error_count": err_cnt,
+            "duration_ms": dur_ms, "infer_ms": infer, "tool_ms": 0,
+            "token_output": tok_out, "status": status, "virtual": False,
+            "model_calls": matched_mcs[:50],
         })
+else:
+    # 日志无 Run 事件 → 降级: 从 session model_calls 按时间间隔切分
+    RUN_GAP_SEC = 90
+    calls_by_session = defaultdict(list)
+    for mc in model_calls:
+        sid = mc.get("session_id", "")
+        if sid:
+            calls_by_session[sid].append(mc)
+    run_seq = 0
+    for sid, calls in calls_by_session.items():
+        calls_sorted = sorted(calls, key=lambda c: c.get("timestamp", ""))
+        if not calls_sorted:
+            continue
+        run_groups = []
+        current_group = [calls_sorted[0]]
+        for i in range(1, len(calls_sorted)):
+            prev_t = parse_time(calls_sorted[i-1].get("timestamp", ""))
+            curr_t = parse_time(calls_sorted[i].get("timestamp", ""))
+            if prev_t and curr_t and (curr_t - prev_t).total_seconds() > RUN_GAP_SEC:
+                run_groups.append(current_group)
+                current_group = []
+            current_group.append(calls_sorted[i])
+        if current_group:
+            run_groups.append(current_group)
+        for grp in run_groups:
+            run_seq += 1
+            start_ts = grp[0].get("timestamp", "")
+            end_ts = grp[-1].get("timestamp", "")
+            dur_ms = 0
+            st = parse_time(start_ts)
+            et = parse_time(end_ts)
+            if st and et:
+                dur_ms = round((et - st).total_seconds() * 1000)
+            model_counts = Counter(c.get("model", "") for c in grp)
+            top_model = model_counts.most_common(1)[0][0] if model_counts else ""
+            agent = grp[0].get("agent", "")
+            tc = sum(len(c.get("tool_calls", [])) for c in grp)
+            tok_out = sum(c.get("output_tokens", 0) or 0 for c in grp)
+            infer = sum(c.get("inference_ms", 0) or 0 for c in grp)
+            err_cnt = sum(1 for c in grp if "error" in str(c.get("stopReason","")).lower())
+            status = "completed" if err_cnt == 0 else "error"
+            runs_list.append({
+                "run_id": "%s#%d" % (sid[:12], run_seq), "agent": agent, "session_key": sid,
+                "start": start_ts, "end": end_ts, "model": top_model, "channel": "",
+                "tool_count": tc, "model_count": len(grp), "error_count": err_cnt,
+                "duration_ms": dur_ms, "infer_ms": infer, "tool_ms": 0,
+                "token_output": tok_out, "status": status, "virtual": True,
+                "model_calls": grp[:50],
+            })
 
 runs_list = sorted(runs_list, key=lambda x: x.get("start") or "", reverse=True)[:200]
 
-# --- Build events timeline from model_calls ---
-for mc in model_calls:
-    ts = mc.get("timestamp", "")
-    agent = mc.get("agent", "")
-    model = mc.get("model", "")
-    sid = mc.get("session_id", "")
-    events_timeline.append({
-        "timestamp": ts,
-        "type": "MODEL-SEND",
-        "detail": "model=%s agent=%s" % (model, agent),
-        "session_key": sid,
-    })
-    for tc in mc.get("tool_calls", []):
-        tool_name = tc.get("name", tc.get("tool", "unknown"))
-        tool_ts = tc.get("timestamp", ts)
-        events_timeline.append({
-            "timestamp": tool_ts,
-            "type": "TOOL",
-            "detail": "tool=%s" % tool_name,
-            "session_key": sid,
-        })
+# --- Events timeline: 优先用日志事件，补充 model_call 事件 ---
+if log_timeline:
+    events_timeline = sorted(log_timeline, key=lambda x: x.get("timestamp", ""))[-500:]
+else:
+    for mc in model_calls:
+        ts = mc.get("timestamp", "")
+        agent = mc.get("agent", "")
+        model = mc.get("model", "")
+        events_timeline.append({"timestamp": ts, "type": "MODEL-SEND", "detail": "model=%s agent=%s" % (model, agent)})
+        for tc in mc.get("tool_calls", []):
+            events_timeline.append({"timestamp": tc.get("timestamp", ts), "type": "TOOL", "detail": "tool=%s" % tc.get("name", "?")})
+    events_timeline = sorted(events_timeline, key=lambda x: x.get("timestamp", ""))[-500:]
 
-events_timeline = sorted(events_timeline, key=lambda x: x.get("timestamp", ""))[-500:]
-
-# --- Extract errors from model_calls ---
-for mc in model_calls:
+# --- Errors: 优先用日志错误，补充 session 错误 ---
+if log_errors:
+    errors_list = sorted(log_errors, key=lambda x: x.get("timestamp", ""), reverse=True)[:200]
+else:
+    for mc in model_calls:
     ts = mc.get("timestamp", "")
     agent = mc.get("agent", "")
     sr = str(mc.get("stopReason", "")).lower()
