@@ -142,9 +142,14 @@ function escHtml(s) {
 
 function shortModel(m) {
   if (!m) return '';
-  var parts = m.split('.');
-  var last = parts[parts.length - 1];
-  return last.replace(/-v\d+$/, '');
+  // 去掉常见 provider 前缀
+  var s = m.replace(/^amazon-bedrock\//i, '')
+           .replace(/^openrouter\//i, '')
+           .replace(/^(anthropic|openai|google)\//i, '')
+           .replace(/^(global|us|eu)\.(anthropic|meta|mistral)\./i, '');
+  // 去掉尾部版本标记 :0, -v1, -v2 等
+  s = s.replace(/:\d+$/, '').replace(/-v\d+(\.\d+)*$/, '');
+  return s;
 }
 
 function eventTagHtml(category) {
