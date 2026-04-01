@@ -280,7 +280,7 @@ docker compose up -d
 OC_DIAG_PORT=8765 OC_DIAG_API_KEY=mysecret docker compose up -d
 
 # 高级模式
-OC_DIAG_ADVANCED=--advanced docker compose up -d
+OC_DIAG_ADVANCED=1 docker compose up -d
 
 # 查看日志
 docker compose logs -f
