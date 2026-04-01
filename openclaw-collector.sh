@@ -551,7 +551,7 @@ for d in sessions_dirs:
                 _msg_role = msg.get("role", "")
                 _msg_id = obj.get("id", msg.get("id", ""))
                 _msg_parent = msg.get("parentId", "")
-                _msg_preview = ""
+                _msg_full = ""
                 _msg_model = ""
                 _msg_infer = 0
                 _msg_tps = 0
@@ -562,10 +562,9 @@ for d in sessions_dirs:
                     if isinstance(_uc, list):
                         for _ui in _uc:
                             if isinstance(_ui, dict) and _ui.get("type") == "text":
-                                _msg_preview += _ui.get("text", "")
+                                _msg_full += _ui.get("text", "")
                     elif isinstance(_uc, str):
-                        _msg_preview = _uc
-                    _msg_preview = _msg_preview[:200]
+                        _msg_full = _uc
                 elif _msg_role == "assistant":
                     _msg_model = msg.get("model", "")
                     _ac = msg.get("content", [])
@@ -574,25 +573,25 @@ for d in sessions_dirs:
                             if isinstance(_ai, dict):
                                 _at = _ai.get("type", "")
                                 if _at == "text":
-                                    _msg_preview += _ai.get("text", "")
+                                    _msg_full += _ai.get("text", "")
                                 elif _at == "thinking":
                                     _msg_think = True
                                 elif _at == "toolCall":
                                     _msg_tc += 1
-                    _msg_preview = _msg_preview[:200]
                 elif _msg_role == "toolResult":
                     _tc = msg.get("content", [])
                     if isinstance(_tc, list):
                         for _ti in _tc:
                             if isinstance(_ti, dict) and _ti.get("type") == "text":
-                                _msg_preview += _ti.get("text", "")
-                    _msg_preview = _msg_preview[:150]
+                                _msg_full += _ti.get("text", "")
+                _msg_preview = _msg_full[:200]
+                _msg_full = _msg_full[:2000]
 
                 if internal_session_id and _msg_role in ("user","assistant","toolResult"):
                     if internal_session_id not in session_messages:
                         session_messages[internal_session_id] = []
                     if len(session_messages[internal_session_id]) < 200:
-                        _entry = {"id": _msg_id, "role": _msg_role, "timestamp": _msg_ts, "preview": _msg_preview, "parentId": _msg_parent}
+                        _entry = {"id": _msg_id, "role": _msg_role, "timestamp": _msg_ts, "preview": _msg_preview, "parentId": _msg_parent, "full_text": _msg_full}
                         if _msg_role == "assistant":
                             _entry["model"] = _msg_model
                             _entry["has_thinking"] = _msg_think
